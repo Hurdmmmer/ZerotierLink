@@ -19,7 +19,6 @@ plugins {
     // - 具体由子模块（app/build.gradle.kts）使用
     alias(libs.plugins.android.application) apply false
 
-
     // Kotlin Compose 插件
     // 作用：
     // - 为 Jetpack Compose 提供 Kotlin 编译支持
@@ -40,4 +39,8 @@ plugins {
     // - 仅声明版本
     // - 实际由 :zerotier-sdk 模块使用
     alias(libs.plugins.android.library) apply false
+
+    // 修复 Hilt 和 KSP 类加载器冲突
+    alias(libs.plugins.ksp) apply false
+    alias(libs.plugins.hilt.android) apply false
 }

@@ -14,6 +14,9 @@ plugins {
     // 注意：
     // 这通常不能替代 kotlin-android 插件
     alias(libs.plugins.kotlin.compose)
+
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt.android)
 }
 
 android {
@@ -128,6 +131,7 @@ dependencies {
 
     // Material 3 组件库
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.navigation.compose)
 
     // 单元测试依赖
     testImplementation(libs.junit)
@@ -149,4 +153,12 @@ dependencies {
 
     // debug 环境下启用 Compose 测试 manifest 支持
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.android.compiler)
+    implementation(libs.androidx.hilt.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.material.kolor)
+    implementation(libs.material.kolor.lib)
 }

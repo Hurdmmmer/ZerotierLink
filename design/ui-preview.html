@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZerotierLink UI Prototype</title>
+  <style>
+    :root {
+      --radius-xs: 8px;
+      --radius-sm: 12px;
+      --radius-md: 16px;
+      --radius-lg: 22px;
+
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+
+      --motion-fast: 160ms;
+      --motion-base: 260ms;
+      --motion-slow: 420ms;
+      --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+      --ease-emphasized: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+      --accent: #1f6fff;
+      --accent-2: #2d7bff;
+      --ok: #18a364;
+      --warn: #eea31b;
+      --error: #ea3b48;
+      --relay: #7a79d4;
+      --root: #5e8de2;
+    }
+
+    /* Light theme */
+    :root,
+    :root[data-active-theme="light"] {
+      --bg: #f2f4f8;
+      --bg-elev: #ffffff;
+      --bg-soft: #e8eef9;
+      --text: #0f1726;
+      --text-2: #5f6b80;
+      --line: #d9e0ec;
+      --chip: #eef3ff;
+      --shadow: 0 10px 30px rgba(29, 53, 96, 0.12);
+    }
+
+    /* Dark theme */
+    :root[data-active-theme="dark"] {
+      --bg: #070d18;
+      --bg-elev: #101a2b;
+      --bg-soft: #122342;
+      --text: #eaf0ff;
+      --text-2: #95a2ba;
+      --line: #21324f;
+      --chip: #14243f;
+      --shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root[data-theme="auto"] {
+        --bg: #070d18;
+        --bg-elev: #101a2b;
+        --bg-soft: #122342;
+        --text: #eaf0ff;
+        --text-2: #95a2ba;
+        --line: #21324f;
+        --chip: #14243f;
+        --shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Manrope", "PingFang SC", "Noto Sans SC", sans-serif;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(31,111,255,.16), transparent 35%),
+        radial-gradient(circle at 95% 100%, rgba(24,163,100,.12), transparent 30%),
+        var(--bg);
+      color: var(--text);
+      transition: background var(--motion-base) var(--ease-standard), color var(--motion-base) var(--ease-standard);
+    }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 9;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: var(--space-4) var(--space-6);
+      backdrop-filter: blur(12px);
+      background: color-mix(in srgb, var(--bg), transparent 30%);
+      border-bottom: 1px solid color-mix(in srgb, var(--line), transparent 40%);
+    }
+
+    .controls { display: flex; gap: var(--space-2); }
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: all var(--motion-fast) var(--ease-standard);
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn.primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+    }
+
+    .grid {
+      width: min(1280px, 96vw);
+      margin: 20px auto 32px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    .phone {
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: 36px;
+      box-shadow: var(--shadow);
+      min-height: 620px;
+      overflow: hidden;
+      position: relative;
+      animation: reveal var(--motion-slow) var(--ease-emphasized) both;
+    }
+
+    @keyframes reveal {
+      from { opacity: 0; transform: translateY(12px) scale(0.98); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .phone-inner { padding: var(--space-5); }
+    .title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .title { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+    .icon-btn {
+      width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line);
+      display: grid; place-items: center; background: var(--bg-elev); color: var(--text); font-size: 22px;
+    }
+
+    .card {
+      background: color-mix(in srgb, var(--bg-elev), var(--accent) 5%);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      margin-bottom: var(--space-3);
+      transition: transform var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
+    }
+    .card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent), var(--line) 65%); }
+
+    .card.active {
+      background: linear-gradient(145deg, color-mix(in srgb, var(--accent), #0000 78%), color-mix(in srgb, var(--bg-elev), var(--accent) 6%));
+    }
+
+    .row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+    .network-name { font-size: 24px; font-weight: 700; line-height: 1.2; }
+    .meta { color: var(--text-2); font-size: 13px; }
+    .mono { font-family: "JetBrains Mono", "Consolas", monospace; }
+
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; font-weight: 700;
+      border-radius: 999px; padding: 4px 10px;
+      border: 1px solid color-mix(in srgb, var(--line), #0000 30%);
+      background: var(--chip);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-2); }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok), #0000 82%); animation: pulse 1.8s infinite; }
+    @keyframes pulse { 0%{transform:scale(1)}50%{transform:scale(1.2)}100%{transform:scale(1)} }
+
+    .divider { height: 1px; background: var(--line); margin: 10px 0 8px; }
+
+    .tabbar {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      border-top: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg-elev), transparent 15%);
+      backdrop-filter: blur(10px);
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      padding: 10px 8px 12px;
+    }
+
+    .tab { text-align: center; font-size: 12px; color: var(--text-2); }
+    .tab.active { color: var(--accent); font-weight: 700; }
+
+    .dialog-wrap {
+      display: grid; place-items: center; height: 100%;
+      background: radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent), #0000 70%), transparent 42%), var(--bg);
+      padding: 24px;
+    }
+
+    .dialog {
+      width: 100%;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+      padding: var(--space-5);
+      box-shadow: var(--shadow);
+    }
+
+    .input {
+      width: 100%;
+      margin-top: 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg-elev), var(--accent) 6%);
+      color: var(--text);
+      padding: 12px;
+      font-size: 16px;
+      font-family: "JetBrains Mono", monospace;
+      outline: none;
+    }
+
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+
+    .legend {
+      width: min(1280px, 96vw);
+      margin: 0 auto 28px;
+      display: flex; flex-wrap: wrap; gap: 10px;
+    }
+    .swatch { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: var(--bg-elev); font-size: 12px; color: var(--text-2); }
+    .chip-color { width: 14px; height: 14px; border-radius: 4px; display: inline-block; vertical-align: -2px; margin-right: 6px; }
+
+    @media (max-width: 760px) {
+      .title { font-size: 28px; }
+      .network-name { font-size: 20px; }
+      .phone { min-height: 560px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <strong>ZerotierLink · UI Prototype</strong>
+    <div class="controls">
+      <button class="btn" id="themeAuto">Auto</button>
+      <button class="btn" id="themeLight">Light</button>
+      <button class="btn" id="themeDark">Dark</button>
+      <button class="btn primary" id="switchAccent">Accent</button>
+    </div>
+  </header>
+
+  <section class="grid">
+    <!-- Networks -->
+    <article class="phone">
+      <div class="phone-inner">
+        <div class="title-row">
+          <div class="title">Networks</div>
+          <button class="icon-btn">+</button>
+        </div>
+
+        <div class="card active">
+          <div class="meta mono">10.144.8.72</div>
+          <div class="meta">Node online · a1b2c3d4e5f6</div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div>
+              <div class="network-name">Home Lab</div>
+              <div class="meta mono">8a3d2e1f9c0b</div>
+            </div>
+            <span class="status-pill"><span class="dot ok"></span>On</span>
+          </div>
+          <div class="divider"></div>
+          <div class="meta mono">192.168.100.42</div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div>
+              <div class="network-name">Work VPN</div>
+              <div class="meta mono">fe1d2c3b4a5</div>
+            </div>
+            <span class="status-pill"><span class="dot"></span>Off</span>
+          </div>
+          <div class="divider"></div>
+          <div class="meta mono">Not connected</div>
+        </div>
+      </div>
+
+      <nav class="tabbar">
+        <div class="tab active">Networks</div>
+        <div class="tab">Peers</div>
+        <div class="tab">Moons</div>
+        <div class="tab">Settings</div>
+      </nav>
+    </article>
+
+    <!-- Peers -->
+    <article class="phone">
+      <div class="phone-inner">
+        <div class="title-row">
+          <div class="title">Peers</div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <strong class="mono">a1b2c3d4e5</strong>
+            <span class="status-pill" style="color:var(--ok)"><span class="dot ok"></span>Direct</span>
+          </div>
+          <div class="meta">LEAF · 5ms</div>
+          <div class="divider"></div>
+          <div class="meta mono">195.88.x.x:9993</div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <strong class="mono">f6e5d4c3b2</strong>
+            <span class="status-pill" style="color:var(--relay)">Relay</span>
+          </div>
+          <div class="meta">LEAF · 142ms</div>
+          <div class="divider"></div>
+          <div class="meta">via relay</div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <strong class="mono">0011223344</strong>
+            <span class="status-pill" style="color:var(--root)">Root</span>
+          </div>
+          <div class="meta">PLANET · root</div>
+        </div>
+      </div>
+
+      <nav class="tabbar">
+        <div class="tab">Networks</div>
+        <div class="tab active">Peers</div>
+        <div class="tab">Moons</div>
+        <div class="tab">Settings</div>
+      </nav>
+    </article>
+
+    <!-- Join Dialog -->
+    <article class="phone">
+      <div class="dialog-wrap">
+        <div class="dialog">
+          <h2 style="margin:0 0 6px 0;">Join network</h2>
+          <div class="meta">Enter a 16-character network ID</div>
+          <input class="input" value="8a3d2e1f9c0b4a5d" />
+          <div class="actions">
+            <button class="btn">Cancel</button>
+            <button class="btn primary">Join</button>
+          </div>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section class="legend">
+    <span class="swatch"><i class="chip-color" style="background:#1f6fff"></i>Primary</span>
+    <span class="swatch"><i class="chip-color" style="background:#18a364"></i>Connected</span>
+    <span class="swatch"><i class="chip-color" style="background:#7a79d4"></i>Relay</span>
+    <span class="swatch"><i class="chip-color" style="background:#ea3b48"></i>Error</span>
+    <span class="swatch"><i class="chip-color" style="background:#eea31b"></i>Warning</span>
+  </section>
+
+  <script>
+    const root = document.documentElement;
+    const setTheme = (mode) => {
+      root.setAttribute("data-theme", mode);
+      if (mode === "light" || mode === "dark") root.setAttribute("data-active-theme", mode);
+      else root.removeAttribute("data-active-theme");
+    };
+
+    document.getElementById("themeAuto").onclick = () => setTheme("auto");
+    document.getElementById("themeLight").onclick = () => setTheme("light");
+    document.getElementById("themeDark").onclick = () => setTheme("dark");
+
+    // Accent palettes for quick visual validation before moving to Compose tokens.
+    const accents = [
+      ["#1f6fff", "#2d7bff"],
+      ["#0ea5a4", "#06b6d4"],
+      ["#e05a3a", "#ff7a45"]
+    ];
+    let index = 0;
+    document.getElementById("switchAccent").onclick = () => {
+      index = (index + 1) % accents.length;
+      root.style.setProperty("--accent", accents[index][0]);
+      root.style.setProperty("--accent-2", accents[index][1]);
+    };
+  </script>
+</body>
+</html>

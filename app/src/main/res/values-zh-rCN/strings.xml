@@ -1,0 +1,149 @@
+<resources>
+    <string name="app_name">Zerotier Link</string>
+
+    <string name="nav_networks">网络</string>
+    <string name="nav_peers">节点</string>
+    <string name="nav_moons">Moon</string>
+    <string name="nav_settings">设置</string>
+
+    <string name="screen_networks_title">网络</string>
+    <string name="screen_networks_subtitle">网络列表页面骨架已就绪。</string>
+    <string name="screen_peers_title">节点</string>
+    <string name="screen_peers_subtitle">节点列表页面骨架已就绪。</string>
+    <string name="screen_moons_title">Moon</string>
+    <string name="screen_moons_subtitle">Moon 列表页面骨架已就绪。</string>
+    <string name="screen_placeholder_hint">下一步：将这里替换为真实业务组件。</string>
+
+    <string name="settings_theme_playground_title">主题实验台</string>
+    <string name="settings_theme_mode">主题模式</string>
+    <string name="settings_dynamic_color_title">动态取色</string>
+    <string name="settings_dynamic_color_toggle">使用系统动态取色</string>
+    <string name="settings_dynamic_color_accent_hint">开启动态取色时，强调色预设会禁用。</string>
+    <string name="settings_accent_preset">强调色预设</string>
+    <string name="settings_live_preview">主题实时预览</string>
+    <string name="settings_preview_primary">主色</string>
+    <string name="settings_preview_surface">表面色</string>
+    <string name="settings_current_value">当前：模式=%1$s，动态取色=%2$s，强调色=%3$s</string>
+    <string name="settings_section_general">通用设置</string>
+    <string name="settings_section_planet">Planet 设置</string>
+    <string name="settings_section_network">网络设置</string>
+    <string name="settings_item_start_on_boot">开机启动</string>
+    <string name="settings_item_start_on_boot_summary">设备启动后自动尝试启动服务。</string>
+    <string name="settings_item_use_custom_planet">使用自定义 Planet</string>
+    <string name="settings_item_use_custom_planet_summary">启用后可使用自定义 planet 文件进行控制器路由。</string>
+    <string name="settings_item_set_planet_file">设置 Planet 文件</string>
+    <string name="settings_item_set_planet_file_summary">请先开启“使用自定义 Planet”再配置来源。</string>
+    <string name="settings_planet_source_dialog_title">配置 Planet 来源</string>
+    <string name="settings_planet_source_dialog_summary">可选择本地文件，或输入 URL 下载后使用。</string>
+    <string name="settings_planet_source_url_description">或填入远程地址，自动下载并应用</string>
+    <string name="settings_planet_source_choose_file">选择本地文件</string>
+    <string name="settings_planet_source_file_label">本地文件</string>
+    <string name="settings_planet_source_url_label">Planet 下载 URL</string>
+    <string name="settings_planet_source_url_hint">https://example.com/planet</string>
+    <string name="settings_planet_source_download_and_use">下载并使用</string>
+    <string name="settings_planet_source_file_fallback_name">已选择本地文件</string>
+    <string name="settings_action_cancel">取消</string>
+    <string name="settings_item_auto_route_check">自动路由探测</string>
+    <string name="settings_item_auto_route_check_summary">在启用 ZeroTier 路由转发前先检测内网状态。</string>
+    <string name="settings_item_probe_ip">内网探测 IP</string>
+    <string name="settings_item_probe_ip_hint">例如：192.168.1.1</string>
+    <string name="settings_item_use_cellular_data">允许蜂窝数据</string>
+    <string name="settings_item_use_cellular_data_summary">允许在移动网络下建立服务连接。</string>
+    <string name="settings_item_disable_ipv6">禁用 IPv6</string>
+    <string name="settings_item_disable_ipv6_summary">断开并重新连接后生效。</string>
+    <string name="settings_status_not_configured">尚未配置</string>
+
+    <string name="theme_mode_system">跟随系统</string>
+    <string name="theme_mode_light">浅色</string>
+    <string name="theme_mode_dark">深色</string>
+
+    <string name="accent_classic_blue">经典蓝</string>
+    <string name="accent_cyan_teal">青蓝</string>
+    <string name="accent_sunset_orange">落日橙</string>
+    <string name="accent_emerald_green">翡翠绿</string>
+    <string name="accent_rose_red">玫瑰红</string>
+    <string name="accent_indigo_slate">靛岩蓝</string>
+    <string name="accent_amber_gold">琥珀金</string>
+    <string name="accent_lime_mint">青柠薄荷</string>
+    <string name="accent_vibrant_purple">活力紫</string>
+
+    <string name="settings_wifi_picker_title">选择内网 WiFi</string>
+    <string name="settings_wifi_picker_summary">连接到该 WiFi 时将使用内网路由</string>
+    <string name="settings_wifi_picker_connected">当前已连接</string>
+    <string name="settings_wifi_picker_no_permission">需要授予 WiFi 相关权限才能扫描列表</string>
+    <string name="settings_wifi_picker_grant">授权</string>
+    <string name="settings_wifi_picker_manual_label">WiFi 名称</string>
+
+    <string name="settings_item_probe_wifi_ssid">内网 Wi-Fi</string>
+    <string name="settings_item_probe_wifi_ssid_summary">连接到此网络时不经过 ZeroTier 转发</string>
+
+    <string name="settings_action_confirm">确认</string>
+    <string name="settings_wifi_picker_no_permission_title">需要权限</string>
+    <string name="settings_wifi_picker_no_permission_body">允许扫描附近 Wi-Fi 后才能显示网络列表</string>
+    <string name="settings_wifi_picker_empty_title">未找到网络</string>
+    <string name="settings_wifi_picker_empty_body">请确认 Wi-Fi 已开启后重试</string>
+    <string name="settings_planet_source_file_hint">点击从本地选择 planet 文件</string>
+    <string name="settings_planet_import_error_cannot_read_source">无法读取所选文件，请重新选择并授权访问权限。</string>
+    <string name="settings_planet_import_error_invalid_url">URL 格式不正确。</string>
+    <string name="settings_planet_import_error_download_failed">下载 planet 文件失败，请检查网络和 URL。</string>
+    <string name="settings_planet_import_error_invalid_file">所选文件不是合法的 planet 文件。</string>
+    <string name="settings_planet_import_error_write_failed">保存 planet 文件到应用目录失败。</string>
+
+    <string name="settings_wifi_picker_location_off_title">请开启定位服务</string>
+    <string name="settings_wifi_picker_location_off_body">已授予权限，但系统定位开关关闭时无法扫描 Wi-Fi 列表</string>
+
+    <string name="boot_service_notification_channel_name">开机自启动</string>
+    <string name="boot_service_notification_channel_desc">设备启动后拉起 ZeroTier 服务</string>
+    <string name="boot_service_notification_title">正在启动 ZeroTier</string>
+    <string name="boot_service_notification_content">开机后正在准备后台服务</string>
+
+    <string name="network_join">加入网络</string>
+    <string name="network_copy_id">复制网络 ID</string>
+    <string name="network_copy_success">已复制网络 ID</string>
+    <string name="network_delete">删除网络</string>
+    <string name="network_lan">内网</string>
+    <string name="network_empty_title">还没有网络</string>
+    <string name="network_empty_body">点击 + 加入你的第一个 ZeroTier 网络</string>
+    <string name="network_id_label">Network ID</string>
+    <string name="enter_network_id_label">输入 Network ID</string>
+    <string name="network_id_hint">16 位十六进制 ID</string>
+    <string name="network_id_error">必须是 16 位十六进制字符</string>
+    <string name="network_exists_already">该网络已存在</string>
+    <string name="network_config_label">配置</string>
+    <string name="network_default_route">默认路由</string>
+    <string name="network_default_route_summary">将所有流量通过此网络转发</string>
+    <string name="network_dns_mode">DNS 模式</string>
+    <string name="dns_mode_none">不使用</string>
+    <string name="dns_mode_network">网络 DNS</string>
+    <string name="dns_mode_custom">自定义</string>
+    <string name="dns_custom_label">DNS 服务器地址</string>
+    <string name="dns_custom_error">无效的 IPv4 或 IPv6 地址</string>
+    <string name="dns_custom_placeholder">8.8.8.8 或 2001:4860:4860::8888</string>
+    <string name="dns_custom_support_hint">支持 IPv4 与 IPv6 地址。</string>
+    <string name="dns_custom_optional_hint">可选。不填则不使用自定义 DNS。</string>
+    <string name="dns_mode_network_hint">使用已加入网络下发的 DNS 服务器。</string>
+    <string name="dns_mode_none_hint">不应用该网络的 DNS 设置。</string>
+    <string name="network_id_count_format">%1$d / %2$d</string>
+    <string name="network_id_required_for_advanced">请先输入有效的 Network ID，再配置路由和 DNS。</string>
+    <string name="network_detail_title">网络详情</string>
+    <string name="network_assigned_ips">分配的地址</string>
+    <string name="network_no_ip">尚未分配地址</string>
+    <string name="network_info_label">网络信息</string>
+    <string name="network_name_label">名称</string>
+    <string name="network_type_label">类型</string>
+    <string name="network_mac_label">MAC 地址</string>
+    <string name="network_mtu_label">MTU</string>
+    <string name="network_broadcast_label">广播</string>
+    <string name="network_bridging_label">桥接</string>
+    <string name="network_dns_servers">DNS 服务器</string>
+    <string name="action_back">返回</string>
+
+    <!-- values-zh -->
+    <string name="network_status_connected">已连接</string>
+    <string name="network_status_connecting">连接中…</string>
+    <string name="network_status_requesting_configuration">正在请求配置…</string>
+    <string name="network_status_authentication_required">等待授权</string>
+    <string name="network_status_disconnected">已断开</string>
+    <string name="network_status_access_denied">无访问权限</string>
+    <string name="network_status_not_found">网络不存在</string>
+</resources>
