@@ -39,6 +39,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
+import io.github.jimmy.ztlink.app.ui.components.common.ItemDivider
+import io.github.jimmy.ztlink.app.ui.components.common.MetaLine
 import io.github.jimmy.ztlink.app.ui.components.settings.SettingsSectionCard
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 
@@ -151,40 +153,95 @@ fun NetworkDetailScreen(
                 item {
                     SettingsSectionCard(title = stringResource(R.string.network_info_label)) {
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            DetailInfoRow(
+                            MetaLine(
                                 label = stringResource(R.string.network_id_label),
                                 value = detail.networkId,
-                                monospace = true
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                valueStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                valueColor = MaterialTheme.colorScheme.onSurface,
+                                valueModifier = Modifier.weight(1f, fill = false),
+                                spacing = dimen.space8
                             )
-                            DetailDivider()
-                            DetailInfoRow(
+                            ItemDivider()
+                            MetaLine(
                                 label = stringResource(R.string.network_name_label),
-                                value = detail.name.ifBlank { "—" })
-                            DetailDivider()
-                            DetailInfoRow(
-                                label = stringResource(R.string.network_type_label),
-                                value = detail.type
+                                value = detail.name.ifBlank { "—" },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                valueStyle = MaterialTheme.typography.bodyMedium,
+                                valueColor = MaterialTheme.colorScheme.onSurface,
+                                valueModifier = Modifier.weight(1f, fill = false),
+                                spacing = dimen.space8
                             )
-                            DetailDivider()
-                            DetailInfoRow(
+                            ItemDivider()
+                            MetaLine(
+                                label = stringResource(R.string.network_type_label),
+                                value = detail.type,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                valueStyle = MaterialTheme.typography.bodyMedium,
+                                valueColor = MaterialTheme.colorScheme.onSurface,
+                                valueModifier = Modifier.weight(1f, fill = false),
+                                spacing = dimen.space8
+                            )
+                            ItemDivider()
+                            MetaLine(
                                 label = stringResource(R.string.network_mac_label),
                                 value = detail.mac,
-                                monospace = true
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                valueStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                valueColor = MaterialTheme.colorScheme.onSurface,
+                                valueModifier = Modifier.weight(1f, fill = false),
+                                spacing = dimen.space8
                             )
-                            DetailDivider()
-                            DetailInfoRow(
+                            ItemDivider()
+                            MetaLine(
                                 label = stringResource(R.string.network_mtu_label),
-                                value = detail.mtu.toString()
+                                value = detail.mtu.toString(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                valueStyle = MaterialTheme.typography.bodyMedium,
+                                valueColor = MaterialTheme.colorScheme.onSurface,
+                                valueModifier = Modifier.weight(1f, fill = false),
+                                spacing = dimen.space8
                             )
-                            DetailDivider()
-                            DetailInfoRow(
+                            ItemDivider()
+                            MetaLine(
                                 label = stringResource(R.string.network_broadcast_label),
-                                value = if (detail.broadcastEnabled) "Enabled" else "Disabled"
+                                value = if (detail.broadcastEnabled) "Enabled" else "Disabled",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                valueStyle = MaterialTheme.typography.bodyMedium,
+                                valueColor = MaterialTheme.colorScheme.onSurface,
+                                valueModifier = Modifier.weight(1f, fill = false),
+                                spacing = dimen.space8
                             )
-                            DetailDivider()
-                            DetailInfoRow(
+                            ItemDivider()
+                            MetaLine(
                                 label = stringResource(R.string.network_bridging_label),
-                                value = if (detail.bridgingEnabled) "Enabled" else "Disabled"
+                                value = if (detail.bridgingEnabled) "Enabled" else "Disabled",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                valueStyle = MaterialTheme.typography.bodyMedium,
+                                valueColor = MaterialTheme.colorScheme.onSurface,
+                                valueModifier = Modifier.weight(1f, fill = false),
+                                spacing = dimen.space8
                             )
                         }
                     }
@@ -222,30 +279,30 @@ fun NetworkDetailScreen(
                     )
                 }
 
-                        HorizontalDivider(
-                            modifier = Modifier.padding(horizontal = dimen.space16),
-                            thickness = 0.5.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                        )
+                        ItemDivider()
 
                         // DNS 模式（只读展示，修改需要重新加入）
-                        DetailInfoRow(
+                        MetaLine(
                             label = stringResource(R.string.network_dns_mode),
                             value = when (detail.dnsMode) {
                                 DnsMode.NONE -> "No DNS"
                                 DnsMode.NETWORK -> "Network DNS"
                                 DnsMode.CUSTOM -> "Custom DNS"
-                                else -> {}
-                            } as String,
+                                else -> "Unknown"
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = dimen.space16, vertical = dimen.space12),
+                            labelStyle = MaterialTheme.typography.bodyMedium,
+                            valueStyle = MaterialTheme.typography.bodyMedium,
+                            valueColor = MaterialTheme.colorScheme.onSurface,
+                            valueModifier = Modifier.weight(1f, fill = false),
+                            spacing = dimen.space8
                         )
 
                         // DNS 服务器列表
                         if (detail.dnsServers.isNotEmpty()) {
-                            HorizontalDivider(
-                                modifier = Modifier.padding(horizontal = dimen.space16),
-                                thickness = 0.5.dp,
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                            )
+                            ItemDivider()
                             Column(
                                 modifier = Modifier.padding(
                                     horizontal = dimen.space16,
@@ -274,46 +331,6 @@ fun NetworkDetailScreen(
             }
         }
     }
-}
-
-/** 只读信息行：label 左 + value 右，等宽字体可选 */
-@Composable
-private fun DetailInfoRow(
-    label: String,
-    value: String,
-    monospace: Boolean = false,
-) {
-    val dimen = ZtTheme.dimen
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = dimen.space16, vertical = dimen.space12),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text     = label,
-            style    = MaterialTheme.typography.bodyMedium,
-            color    = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text  = value,
-            style = if (monospace)
-                MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-            else
-                MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-    }
-}
-
-@Composable
-private fun DetailDivider() {
-    HorizontalDivider(
-        modifier  = Modifier.padding(horizontal = ZtTheme.dimen.space16),
-        thickness = 0.5.dp,
-        color     = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-    )
 }
 
 /** 状态 + LAN 标签行，复用列表页的 Badge 风格 */

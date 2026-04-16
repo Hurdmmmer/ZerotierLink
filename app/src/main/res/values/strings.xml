@@ -152,4 +152,19 @@
     <string name="network_status_disconnected">Disconnected</string>
     <string name="network_status_access_denied">Access denied</string>
     <string name="network_status_not_found">Not found</string>
+    <string name="network_status_chip_connected">Connected</string>
+    <string name="network_status_chip_requesting_configuration">Requesting</string>
+    <string name="network_status_chip_authentication_required">Auth pending</string>
+    <string name="network_status_chip_disconnected">Disconnected</string>
+    <string name="network_status_chip_access_denied">Denied</string>
+    <string name="network_status_chip_not_found">Not found</string>
+    <string name="network_activation_active">Active</string>
+    <string name="network_activation_inactive">Inactive</string>
+    <string name="network_activation_hint_inactive">Inactive now. Turn on the switch on the right to connect.</string>
+    <string name="network_status_hint_connected">Connected. Tap the card to view network details.</string>
+    <string name="network_status_hint_requesting_configuration">Requesting configuration from controller. Please wait.</string>
+    <string name="network_status_hint_authentication_required">Waiting for controller authorization.</string>
+    <string name="network_status_hint_disconnected">Disconnected. You can reconnect by toggling the switch.</string>
+    <string name="network_status_hint_access_denied">Access denied by controller. Check member authorization.</string>
+    <string name="network_status_hint_not_found">Network not found. Please verify Network ID.</string>
 </resources>

@@ -146,4 +146,19 @@
     <string name="network_status_disconnected">已断开</string>
     <string name="network_status_access_denied">无访问权限</string>
     <string name="network_status_not_found">网络不存在</string>
+    <string name="network_status_chip_connected">已连接</string>
+    <string name="network_status_chip_requesting_configuration">请求配置</string>
+    <string name="network_status_chip_authentication_required">待授权</string>
+    <string name="network_status_chip_disconnected">已断开</string>
+    <string name="network_status_chip_access_denied">无权限</string>
+    <string name="network_status_chip_not_found">不存在</string>
+    <string name="network_activation_active">已激活</string>
+    <string name="network_activation_inactive">未激活</string>
+    <string name="network_activation_hint_inactive">当前未激活，打开右侧开关即可连接。</string>
+    <string name="network_status_hint_connected">网络已连接，点击卡片可查看详情。</string>
+    <string name="network_status_hint_requesting_configuration">正在向控制器请求配置，请稍候。</string>
+    <string name="network_status_hint_authentication_required">等待控制器授权后即可连通。</string>
+    <string name="network_status_hint_disconnected">当前已断开，可通过右侧开关重新连接。</string>
+    <string name="network_status_hint_access_denied">已被控制器拒绝，请检查成员授权设置。</string>
+    <string name="network_status_hint_not_found">未找到该网络，请核对 Network ID。</string>
 </resources>

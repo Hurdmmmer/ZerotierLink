@@ -5,7 +5,6 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
-import android.widget.Toast
 import androidx.activity.compose.ManagedActivityResultLauncher
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,7 +38,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Wifi
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -48,13 +46,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -63,28 +60,27 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
+import io.github.jimmy.ztlink.app.ui.components.common.ItemDivider
 import io.github.jimmy.ztlink.app.ui.components.common.ObserveUiEvents
 import io.github.jimmy.ztlink.app.ui.theme.AccentPreset
+import io.github.jimmy.ztlink.app.ui.theme.LocalThemeSettings
+import io.github.jimmy.ztlink.app.ui.theme.LocalUpdateTheme
 import io.github.jimmy.ztlink.app.ui.theme.ZerotierLinkShapes
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 import io.github.jimmy.ztlink.app.ui.theme.accentPaletteOf
 import io.github.jimmy.ztlink.app.utils.AppPermissions
 import io.github.jimmy.ztlink.app.utils.rememberPermissionState
-import io.github.jimmy.ztlink.data.settings.PlanetFileStore
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import io.github.jimmy.ztlink.app.ui.theme.LocalThemeSettings
-import io.github.jimmy.ztlink.app.ui.theme.LocalUpdateTheme
 
 /**
  * 设置页。
@@ -162,7 +158,7 @@ fun SettingScreen(
                             },
                         )
 
-                        SettingItemDivider()
+                        ItemDivider()
 
                         AccentPresetSelector(
                             selected   = themeSettings.accentPreset,
@@ -184,7 +180,7 @@ fun SettingScreen(
                             )
                         }
 
-                        SettingItemDivider()
+                        ItemDivider()
 
                         SettingSwitchRow(
                             title           = stringResource(R.string.settings_item_start_on_boot),
@@ -205,7 +201,7 @@ fun SettingScreen(
                             onCheckedChange = settings::togglePlanetUseCustom,
                         )
 
-                        SettingItemDivider()
+                        ItemDivider()
 
                         // Planet 文件行
                         SettingActionRow(
@@ -242,7 +238,7 @@ fun SettingScreen(
                             )
                         }
 
-                        SettingItemDivider()
+                        ItemDivider()
 
                         SettingSwitchRow(
                             title           = stringResource(R.string.settings_item_auto_route_check),
@@ -253,7 +249,7 @@ fun SettingScreen(
                         )
 
                         // Planet 卡片内，替换原来的 OutlinedTextField Box：
-                        SettingItemDivider()
+                        ItemDivider()
                         // WiFi SSID 行
                         SettingActionRow(
                             title         = stringResource(R.string.settings_item_probe_wifi_ssid),
@@ -287,7 +283,7 @@ fun SettingScreen(
                             onCheckedChange = settings::toggleUseCellularData,
                         )
 
-                        SettingItemDivider()
+                        ItemDivider()
 
                         SettingSwitchRow(
                             title           = stringResource(R.string.settings_item_disable_ipv6),
@@ -329,22 +325,6 @@ private fun registerFileLauncher(
 }
 
 // ── 内部辅助组件 ──────────────────────────────────────────────────────────
-
-/**
- * 设置项之间的分割线。
- *
- * 设计意图：
- * 1. 使用低对比度细线分隔信息块，减少卡片内部“堆叠感”。
- * 2. 水平留白与内容区域对齐，保证视觉网格一致。
- */
-@Composable
-private fun SettingItemDivider() {
-    HorizontalDivider(
-        modifier  = Modifier.padding(horizontal = ZtTheme.dimen.space16),
-        thickness = 0.5.dp,
-        color     = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-    )
-}
 
 /**
  * 主题模式三段选择 + 动态取色开关，合并一行。

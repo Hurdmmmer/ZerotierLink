@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
+import io.github.jimmy.ztlink.app.ui.components.common.ItemDivider
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 import io.github.jimmy.ztlink.app.utils.PermissionState
 import kotlinx.coroutines.launch
@@ -135,10 +136,7 @@ fun WifiSsidPickerSheet(
                 )
             }
 
-            HorizontalDivider(
-                thickness = 0.5.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-            )
+            ItemDivider(horizontalPadding = 0.dp)
 
             when {
                 !wifiPermission.isGranted -> NoPermissionHint(wifiPermission::request)
