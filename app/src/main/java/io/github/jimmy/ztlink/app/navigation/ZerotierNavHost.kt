@@ -2,12 +2,10 @@ package io.github.jimmy.ztlink.app.navigation
 
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -73,9 +71,9 @@ private object NetworkRoutes {
  * 应用主路由容器。
  *
  * 动画策略：
- * 1. Tab <-> Tab：只动页面内容层（含 AppTopBar），底栏由外层保持静止；
- * 2. Tab <-> 子页面：轻微横移 + 淡入淡出，避免突兀；
- * 3. 前进/返回对称：enter 用 emphasizedDecelerate，exit 用 emphasizedAccelerate。
+ * 1. Tab <-> Tab：仅内容区水平切换，底栏保持静止。
+ * 2. Tab <-> 子页面：覆盖式 Push/Pop，避免双层同屏位移。
+ * 3. 子页面不使用透明与缩放，保证文本与细线稳定。
  */
 @Composable
 fun ZerotierNavHost(
@@ -87,11 +85,9 @@ fun ZerotierNavHost(
 
     // ── 页面转场动画配置 ─────────────────────────────────────────────
     // 同级 Tab：节奏干脆但不突兀，避免过快导致“闪切”。
-    val tabDurationMillis = 220
-    val tabEasing = CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)
     val tabSlideSpec = tween<IntOffset>(
-        durationMillis = tabDurationMillis,
-        easing = tabEasing
+        durationMillis = ZtTheme.motion.normalMillis,
+        easing = ZtTheme.motion.standardEasing
     )
 
     // Tab 切换使用纯水平位移，A/B 同步滑动形成“推着走”。
@@ -113,34 +109,27 @@ fun ZerotierNavHost(
 
     // ── 页面转场动画配置 ─────────────────────────────────────────────
 
-    // 子页面转场：使用 motion.normalMillis (300ms) 保持与底栏隐藏同步。
-    val childSpec = tween<Float>(
-        durationMillis = motion.normalMillis,
-        easing = motion.standardEasing
-    )
+    // 子页面采用覆盖式导航动画：
+    // - Push：新页从右侧滑入，旧页静止（被覆盖）
+    // - Pop：当前页向右滑出，旧页静止（被揭开）
     val childOffsetSpec = tween<IntOffset>(
-        durationMillis = motion.normalMillis,
+        durationMillis = ZtTheme.motion.normalMillis,
         easing = motion.standardEasing
     )
-
-    // 进入子页面：淡入 + 缩放 + 水平微移
     val childEnter = { forward: Boolean ->
-        fadeIn(animationSpec = childSpec) +
-                scaleIn(
-                    animationSpec = childSpec,
-                    initialScale = if (forward) 0.96f else 1.04f // 前进时从小变大，返回时从大变小
-                ) +
-                slideInHorizontally(childOffsetSpec) { (it * if (forward) 0.1f else -0.1f).toInt() }
+        if (forward) {
+            slideInHorizontally(childOffsetSpec) { fullWidth -> fullWidth }
+        } else {
+            EnterTransition.None
+        }
     }
 
-    // 离开子页面：淡出 + 缩放 + 水平微移
     val childExit = { forward: Boolean ->
-        fadeOut(animationSpec = childSpec) +
-                scaleOut(
-                    animationSpec = childSpec,
-                    targetScale = if (forward) 1.04f else 0.96f // 前进时被推远，返回时向后缩进
-                ) +
-                slideOutHorizontally(childOffsetSpec) { (it * if (forward) -0.1f else 0.1f).toInt() }
+        if (forward) {
+            ExitTransition.None
+        } else {
+            slideOutHorizontally(childOffsetSpec) { fullWidth -> fullWidth }
+        }
     }
 
     NavHost(
