@@ -6,6 +6,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
@@ -104,14 +106,26 @@ fun ZerotierApp() {
     }
 
     // 只有 Tab 路由显示底栏；所有子页面隐藏底栏。
-    // 额外处理：首帧 route 可能为 null，这里按“应显示底栏”处理，避免启动时先隐藏再滑入。
     val showBottomBar = currentRoute == null || isTabRoute
+
+    // 使用公共 Motion 令牌对齐时长与曲线，确保底栏隐藏与页面进入节奏一致。
     val bottomBarEnterSpec = tween<IntOffset>(
-        durationMillis = 200,
+        durationMillis = motion.normalMillis,
         easing = motion.emphasizedDecelerateEasing,
     )
     val bottomBarExitSpec = tween<IntOffset>(
-        durationMillis = 200,
+        durationMillis = motion.normalMillis,
+        easing = motion.standardEasing, // 退出时改用 standard 以获得更及时的位移反馈
+    )
+    // 精细化的透明度动画规格：
+    // 进入时：跟随减速曲线，结尾丝滑。
+    val bottomBarFadeInSpec = tween<Float>(
+        durationMillis = motion.normalMillis,
+        easing = motion.emphasizedDecelerateEasing,
+    )
+    // 退出时：跟随加速曲线，起步后迅速消失（时长稍短，避免拖泥带水）。
+    val bottomBarFadeOutSpec = tween<Float>(
+        durationMillis = (motion.normalMillis * 0.75).toInt(),
         easing = motion.emphasizedAccelerateEasing,
     )
 
@@ -135,11 +149,11 @@ fun ZerotierApp() {
                     enter = slideInVertically(
                         animationSpec = bottomBarEnterSpec,
                         initialOffsetY = { it },
-                    ),
+                    ) + fadeIn(animationSpec = bottomBarFadeInSpec),
                     exit = slideOutVertically(
                         animationSpec = bottomBarExitSpec,
                         targetOffsetY = { it },
-                    ),
+                    ) + fadeOut(animationSpec = bottomBarFadeOutSpec),
                 ) {
                     ZerotierBottomBar(
                         currentDestination = currentBackStackEntry?.destination,

@@ -56,7 +56,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
@@ -67,10 +66,10 @@ import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 
 @Composable
 fun NetworksScreen(
+    viewModel: NetworksViewModel,
     onNetworkClick: (String) -> Unit,
     onJoinNetwork: () -> Unit,
 ) {
-    val viewModel: NetworksViewModel = hiltViewModel()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val networks = uiState.networks
     val nodeId   = ""      // ViewModel 提供

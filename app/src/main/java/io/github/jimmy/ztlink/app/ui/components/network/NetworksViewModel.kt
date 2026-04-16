@@ -128,10 +128,10 @@ class NetworksViewModel @Inject constructor(
                 return@launch
             }
 
-            // Key logic:
-            // 1) Persist join configuration first.
-            // 2) Mark status as requesting configuration to align with authorization flow.
-            // 3) Set the newly joined network as last activated.
+            // 关键逻辑（连接状态机）：
+            // 1) “加入网络”仅做配置落库，不自动发起连接；
+            // 2) 初始状态设为 DISCONNECTED，开关默认关闭；
+            // 3) 用户点击连接开关后，再进入 REQUESTING_CONFIGURATION 等后续状态。
             val normalizedDnsList = if (dnsMode == DnsMode.CUSTOM) {
                 customDnsList.map { it.trim() }.filter { it.isNotBlank() }
             } else {
@@ -142,14 +142,14 @@ class NetworksViewModel @Inject constructor(
                 NetworkEntity(
                     networkId = parsedId,
                     displayName = parsedId.value,
-                    isEnabled = true,
+                    isEnabled = false,
                     lastActivated = true,
                     config = NetworkConfigEntity(
                         routeViaZeroTier = defaultRoute,
                         dnsMode = dnsMode.toModelDnsMode(),
                         customDns = customDnsValue,
                     ),
-                    status = NetworkConnectionStatus.REQUESTING_CONFIGURATION,
+                    status = NetworkConnectionStatus.DISCONNECTED,
                     assignedIps = emptyList(),
                     dnsServers = normalizedDnsList,
                     mac = "",
@@ -177,7 +177,27 @@ class NetworksViewModel @Inject constructor(
         viewModelScope.launch {
             val parsedId = NetworkId.parse(networkId) ?: return@launch
             val current = networkRepository.findById(parsedId) ?: return@launch
-            networkRepository.upsert(current.copy(isEnabled = enabled))
+            // 关键逻辑（开关驱动状态机）：
+            // - 开启：进入“请求配置”状态，表示开始连接流程；
+            // - 关闭：回到“已断开”状态，并清理运行态信息避免脏数据。
+            val nextEntity = if (enabled) {
+                current.copy(
+                    isEnabled = true,
+                    status = NetworkConnectionStatus.REQUESTING_CONFIGURATION,
+                )
+            } else {
+                current.copy(
+                    isEnabled = false,
+                    status = NetworkConnectionStatus.DISCONNECTED,
+                    assignedIps = emptyList(),
+                    dnsServers = emptyList(),
+                    mac = "",
+                    mtu = null,
+                    broadcastEnabled = false,
+                    bridgingEnabled = false,
+                )
+            }
+            networkRepository.upsert(nextEntity)
             loadNetworks()
         }
     }

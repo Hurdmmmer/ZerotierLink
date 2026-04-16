@@ -113,11 +113,15 @@ fun ZerotierNavHost(
 
     // ── 页面转场动画配置 ─────────────────────────────────────────────
 
-    // 子页面转场：统一使用 standardEasing 减少“加速离场”带来的跳跃感。
-    // 时长设为 300ms，配合微缩放，能产生一种类似“揭开”或“覆盖”的层级流动感。
-    val childDurationMillis = 300
-    val childSpec = tween<Float>(durationMillis = childDurationMillis, easing = motion.standardEasing)
-    val childOffsetSpec = tween<IntOffset>(durationMillis = childDurationMillis, easing = motion.standardEasing)
+    // 子页面转场：使用 motion.normalMillis (300ms) 保持与底栏隐藏同步。
+    val childSpec = tween<Float>(
+        durationMillis = motion.normalMillis,
+        easing = motion.standardEasing
+    )
+    val childOffsetSpec = tween<IntOffset>(
+        durationMillis = motion.normalMillis,
+        easing = motion.standardEasing
+    )
 
     // 进入子页面：淡入 + 缩放 + 水平微移
     val childEnter = { forward: Boolean ->
@@ -177,11 +181,12 @@ fun ZerotierNavHost(
             startDestination = ZerotierTab.NETWORKS.route
         ) {
             // 网络列表主页
-            composable(route = ZerotierTab.NETWORKS.route) {
-                // NetworksScreen 内部会通过 hiltViewModel 获取 ViewModel。
-                // 如果需要共享 ViewModel，可以在 NetworksScreen 内部使用特定的 key。
-                // 但目前建议保持简单，如果需要共享作用域，后续再优化。
+            composable(route = ZerotierTab.NETWORKS.route) { backStackEntry ->
+                val parentEntry = remember(backStackEntry) { navController.getBackStackEntry("network_flow") }
+                // Keep list/join/detail on the same graph-scoped ViewModel instance.
+                val viewModel: NetworksViewModel = hiltViewModel(parentEntry)
                 NetworksScreen(
+                    viewModel = viewModel,
                     onNetworkClick = { networkId ->
                         navController.navigate(NetworkRoutes.networkDetail(networkId))
                     },
