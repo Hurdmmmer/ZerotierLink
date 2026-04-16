@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.jimmy.ztlink.app.ui.components.settings.PlanetSourceType
 import io.github.jimmy.ztlink.app.ui.components.settings.SettingsUiState
 import io.github.jimmy.ztlink.app.ui.theme.AccentPreset
@@ -16,6 +17,7 @@ import io.github.jimmy.ztlink.app.ui.components.settings.ThemeSettings
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.catch
 import java.io.IOException
+import javax.inject.Inject
 
 /**
  * 负责设置项的持久化读写（DataStore 版本）。
@@ -25,7 +27,9 @@ import java.io.IOException
  * 2. DataStore 天然适配协程和 Flow，更适合 Compose + ViewModel 架构。
  * 3. 后续做“设置变化监听”会更自然（直接 collect Flow）。
  */
-class SettingsStore(private val context: Context) {
+class SettingsStore @Inject constructor(
+    @param:ApplicationContext private val context: Context
+) {
 
     companion object {
         /**

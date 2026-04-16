@@ -1,6 +1,5 @@
 package io.github.jimmy.ztlink.app.ui.components.settings
 
-import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -8,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jimmy.ztlink.data.settings.PlanetFileStore
 import io.github.jimmy.ztlink.data.settings.SettingsStore
+import io.github.jimmy.ztlink.data.settings.SettingsStartupWarmup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -15,7 +15,6 @@ import androidx.core.net.toUri
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 
 import io.github.jimmy.ztlink.R
@@ -53,14 +52,13 @@ sealed interface SettingsUiEvent : CommonUiEvent {
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    @param:ApplicationContext private val appContext: Context
-) : ViewModel() {
-
     /** 配置持久化存储。 */
-    private val settingsStore = SettingsStore(appContext)
-
+    private val settingsStore: SettingsStore,
     /** planet 文件落盘管理器。 */
-    private val planetFileStore = PlanetFileStore(appContext)
+    private val planetFileStore: PlanetFileStore,
+    /** 启动预热缓存。 */
+    private val settingsStartupWarmup: SettingsStartupWarmup,
+) : ViewModel() {
 
     /**
      * UI 状态模型。
@@ -81,27 +79,16 @@ class SettingsViewModel @Inject constructor(
     val uiEvents = _uiEvents.asSharedFlow()
 
     init {
+        // 优先消费 Application 阶段预热结果，确保首次进入页面不出现“默认值闪回”。
+        val warmedState = settingsStartupWarmup.cachedStateOrNull()
+        if (warmedState != null) {
+            settingUiState = warmedState
+        }
+
         viewModelScope.launch {
-            // App 启动后立即读取持久化配置。
-            // 如果本地勾选了“使用自定义 planet”但文件已丢失，会自动回退关闭该开关。
-            val hasPlanetFile = withContext(Dispatchers.IO) {
-                planetFileStore.hasCustomPlanetFile()
-            }
-            val shouldForceDisableCustomPlanet = !hasPlanetFile
-
-            val stateFromStore = withContext(Dispatchers.IO) {
-                settingsStore.readState(
-                    forceDisableCustomPlanet = shouldForceDisableCustomPlanet
-                )
-            }
+            // 统一走 warmup，保证 ViewModel 与 Application 使用同一套初始化规则。
+            val stateFromStore = withContext(Dispatchers.IO) { settingsStartupWarmup.warmup() }
             settingUiState = stateFromStore
-
-            if (shouldForceDisableCustomPlanet && stateFromStore.planetUseCustom) {
-                // 理论上 readState 已经处理，这里作为保险兜底。
-                withContext(Dispatchers.IO) {
-                    settingsStore.disableCustomPlanet()
-                }
-            }
         }
     }
 

@@ -2,12 +2,14 @@ package io.github.jimmy.ztlink.data.settings
 
 import android.content.Context
 import android.net.Uri
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import javax.inject.Inject
 
 /**
  * 负责 Planet 文件的统一落盘逻辑。
@@ -17,9 +19,9 @@ import java.net.URL
  * 2. 无论来自“本地文件”还是“URL 下载”，都走同一套校验与写入流程。
  * 3. 最终只暴露稳定结果：成功 / 失败。
  */
-class PlanetFileStore(
+class PlanetFileStore @Inject constructor(
     /** 应用级 Context，用于访问 filesDir / cacheDir / ContentResolver。 */
-    private val context: Context
+    @param:ApplicationContext private val context: Context
 ) {
     /**
      * planet 导入结果。

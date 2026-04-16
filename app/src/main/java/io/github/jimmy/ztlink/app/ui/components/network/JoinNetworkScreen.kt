@@ -1,6 +1,5 @@
 package io.github.jimmy.ztlink.app.ui.components.network.join
 
-import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
@@ -41,7 +40,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,7 +62,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.core.content.edit
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
@@ -112,21 +109,20 @@ private fun isCustomDnsGroupValid(values: List<String>): Boolean {
 
 @Composable
 fun JoinNetworkScreen(
-    viewModel: NetworksViewModel               = hiltViewModel(),
+    viewModel: NetworksViewModel,
     onBack: () -> Unit = {},
 ) {
+    // ── 基础 UI 设施 ──────────────────────────────────────────
     val dimen        = ZtTheme.dimen
     val context      = LocalContext.current
     val focusManager = LocalFocusManager.current
 
+    // ── 交互与滚动状态 ────────────────────────────────────────
     val networkIdInteraction = remember { MutableInteractionSource() }
     val networkIdFocused     by networkIdInteraction.collectIsFocusedAsState()
     val listState            = rememberLazyListState()
 
-    val defaultRoutePrefs = remember(context) {
-        context.getSharedPreferences("join_network_prefs", Context.MODE_PRIVATE)
-    }
-
+    // ── 输入字段状态 (使用 rememberSaveable 支持旋屏恢复) ──────────
     var networkId    by rememberSaveable { mutableStateOf("") }
     var defaultRoute by rememberSaveable { mutableStateOf(false) }
     var dnsMode      by rememberSaveable { mutableStateOf(DnsMode.NONE) }
@@ -135,22 +131,24 @@ fun JoinNetworkScreen(
     var customDnsV6_1 by rememberSaveable { mutableStateOf("") }
     var customDnsV6_2 by rememberSaveable { mutableStateOf("") }
 
+    // 将 4 个 DNS 输入框组合为列表，便于批量校验
     val customDnsInputs = listOf(customDnsV4_1, customDnsV4_2, customDnsV6_1, customDnsV6_2)
 
+    // ── 派生校验逻辑 ──────────────────────────────────────────
+    // 1. Network ID 必须为 16 位 16 进制字符串
     val networkIdValid = networkId.length == NETWORK_ID_LENGTH && networkId.all { it.isHexDigit() }
+    // 2. 错误状态：非空且不合法时显示错误 UI
     val networkIdError = networkId.isNotBlank() && !networkIdValid
+    // 3. DNS 校验：非 CUSTOM 模式或 CUSTOM 模式下输入组全部合法
     val customDnsValid = dnsMode != DnsMode.CUSTOM || isCustomDnsGroupValid(customDnsInputs)
+    // 4. 最终提交权限：ID 合法且 DNS 配置合法
     val canJoin = networkIdValid && customDnsValid
 
-    // 一行观察：自动处理 Toast，手动处理跳转
+    // ── 统一事件观察 ──────────────────────────────────────────
+    // 一行观察：ObserveUiEvents 内部会自动处理 Toast 显示。
+    // 这里只需处理特殊的导航跳转逻辑。
     ObserveUiEvents(viewModel.uiEvents) { event ->
         if (event is NetworksUiEvent.NavigateBack) onBack()
-    }
-
-    LaunchedEffect(networkId, networkIdValid) {
-        if (!networkIdValid) { defaultRoute = false; return@LaunchedEffect }
-        val saved = defaultRoutePrefs.getStringSet(DEFAULT_ROUTE_PREF_KEY, emptySet()).orEmpty()
-        defaultRoute = saved.contains(networkId)
     }
 
     Scaffold(
@@ -296,13 +294,6 @@ fun JoinNetworkScreen(
                             enabled         = networkIdValid,
                             onCheckedChange = { checked ->
                                 defaultRoute = checked
-                                val set = defaultRoutePrefs
-                                    .getStringSet(DEFAULT_ROUTE_PREF_KEY, emptySet())
-                                    .orEmpty().toMutableSet()
-                                if (checked) set.add(networkId) else set.remove(networkId)
-                                defaultRoutePrefs.edit {
-                                    putStringSet(DEFAULT_ROUTE_PREF_KEY, set)
-                                }
                             },
                         )
 
@@ -410,7 +401,6 @@ fun JoinNetworkScreen(
                                     ),
                                 ) {
                                     val dnsLabels = listOf("IPv4 #1", "IPv4 #2", "IPv6 #1", "IPv6 #2")
-                                    val dnsValues = customDnsInputs
                                     val dnsOnValueChange = listOf<(String) -> Unit>(
                                         { customDnsV4_1 = it },
                                         { customDnsV4_2 = it },
@@ -421,36 +411,37 @@ fun JoinNetworkScreen(
                                     // 关键逻辑：
                                     // - CUSTOM 模式允许全部为空；
                                     // - 任意单个输入非空时，必须单独通过 IP 校验。
-                                    dnsValues.forEachIndexed { index, value ->
+                                    customDnsInputs.forEachIndexed { index, value ->
                                         val trimmed = value.trim()
-                                        val isError = trimmed.isNotEmpty() && !isValidIpAddress(trimmed)
+                                        val isError =
+                                            trimmed.isNotEmpty() && !isValidIpAddress(trimmed)
                                         OutlinedTextField(
-                                            value         = value,
+                                            value = value,
                                             onValueChange = dnsOnValueChange[index],
-                                            modifier      = Modifier.fillMaxWidth(),
-                                            shape         = ZerotierLinkShapes.medium,
-                                            label         = {
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = ZerotierLinkShapes.medium,
+                                            label = {
                                                 Text("${stringResource(R.string.dns_custom_label)} ${dnsLabels[index]}")
                                             },
-                                            placeholder   = {
+                                            placeholder = {
                                                 Text(
-                                                    text  = stringResource(R.string.dns_custom_placeholder),
+                                                    text = stringResource(R.string.dns_custom_placeholder),
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                                 )
                                             },
                                             leadingIcon = {
                                                 Icon(
-                                                    imageVector        = Icons.Outlined.Dns,
+                                                    imageVector = Icons.Outlined.Dns,
                                                     contentDescription = null,
-                                                    modifier           = Modifier.size(dimen.space20),
-                                                    tint               = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(dimen.space20),
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 )
                                             },
                                             isError = isError,
                                             supportingText = {
                                                 Text(
-                                                    text  = if (isError) {
+                                                    text = if (isError) {
                                                         stringResource(R.string.dns_custom_error)
                                                     } else {
                                                         // 与老项目行为对齐：自定义 DNS 可为空。
@@ -464,18 +455,18 @@ fun JoinNetworkScreen(
                                                     },
                                                 )
                                             },
-                                            singleLine      = true,
+                                            singleLine = true,
                                             keyboardOptions = KeyboardOptions(
                                                 keyboardType = KeyboardType.Ascii,
-                                                imeAction    = if (index == dnsValues.lastIndex) ImeAction.Done else ImeAction.Next,
+                                                imeAction = if (index == customDnsInputs.lastIndex) ImeAction.Done else ImeAction.Next,
                                             ),
                                             colors = OutlinedTextFieldDefaults.colors(
-                                                focusedBorderColor      = MaterialTheme.colorScheme.primary,
-                                                unfocusedBorderColor    = MaterialTheme.colorScheme.outlineVariant,
-                                                focusedLabelColor       = MaterialTheme.colorScheme.primary,
-                                                unfocusedLabelColor     = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                                focusedLabelColor = MaterialTheme.colorScheme.primary,
+                                                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                                focusedContainerColor   = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                                             ),
                                         )
                                     }
