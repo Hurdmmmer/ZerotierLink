@@ -6,14 +6,12 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jimmy.ztlink.data.settings.PlanetFileStore
-import io.github.jimmy.ztlink.data.settings.SettingsStore
-import io.github.jimmy.ztlink.data.settings.SettingsStartupWarmup
+import io.github.jimmy.ztlink.data.settings.SettingsStateHolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import androidx.core.net.toUri
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collectLatest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 
@@ -52,12 +50,8 @@ sealed interface SettingsUiEvent : CommonUiEvent {
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    /** 配置持久化存储。 */
-    private val settingsStore: SettingsStore,
-    /** planet 文件落盘管理器。 */
-    private val planetFileStore: PlanetFileStore,
-    /** 启动预热缓存。 */
-    private val settingsStartupWarmup: SettingsStartupWarmup,
+    /** 设置状态单例持有器（应用级唯一状态源）。 */
+    private val settingsStateHolder: SettingsStateHolder,
 ) : ViewModel() {
 
     /**
@@ -79,16 +73,20 @@ class SettingsViewModel @Inject constructor(
     val uiEvents = _uiEvents.asSharedFlow()
 
     init {
-        // 优先消费 Application 阶段预热结果，确保首次进入页面不出现“默认值闪回”。
-        val warmedState = settingsStartupWarmup.cachedStateOrNull()
-        if (warmedState != null) {
-            settingUiState = warmedState
+        // 关键逻辑：
+        // 1) 先使用单例持有器当前快照，保证首帧可立即渲染；
+        // 2) 再持续订阅同一状态流，保证多个 ViewModel 实例看到一致状态。
+        settingUiState = settingsStateHolder.currentState()
+        viewModelScope.launch {
+            settingsStateHolder.state.collectLatest { latest ->
+                settingUiState = latest
+            }
         }
 
-        viewModelScope.launch {
-            // 统一走 warmup，保证 ViewModel 与 Application 使用同一套初始化规则。
-            val stateFromStore = withContext(Dispatchers.IO) { settingsStartupWarmup.warmup() }
-            settingUiState = stateFromStore
+        viewModelScope.launch(Dispatchers.IO) {
+            // 关键逻辑：
+            // 强制刷新最新持久化值，避免仅依赖启动缓存导致页面读到旧状态。
+            settingsStateHolder.refreshFromStore(forceRefresh = true)
         }
     }
 
@@ -161,27 +159,15 @@ class SettingsViewModel @Inject constructor(
      * @param rawUri 文件 Uri 字符串。
      */
     fun setPlanetSourceFromFile(displayName: String, rawUri: String) {
-        viewModelScope.launch {
-            val sourceUri = runCatching { rawUri.toUri() }.getOrNull()
-            if (sourceUri == null) {
-                return@launch
-            }
-
-            // 文件 IO 必须放到 IO 线程，避免阻塞主线程。
-            val importResult = withContext(Dispatchers.IO) {
-                planetFileStore.importFromUri(sourceUri)
-            }
+        viewModelScope.launch(Dispatchers.IO) {
+            // 关键逻辑：
+            // 文件导入与状态写回统一由单例状态源处理，ViewModel 仅负责 UI 事件。
+            val importResult = settingsStateHolder.importPlanetFromFile(
+                displayName = displayName,
+                rawUri = rawUri,
+            )
             when (importResult) {
-                is PlanetFileStore.ImportResult.Success -> {
-                    updateStateAndPersist {
-                        it.copy(
-                            planetUseCustom = true,
-                            planetSourceType = PlanetSourceType.FILE,
-                            planetSourceDisplay = displayName,
-                            planetSourceRawValue = rawUri
-                        )
-                    }
-                }
+                is PlanetFileStore.ImportResult.Success -> Unit
                 is PlanetFileStore.ImportResult.Failure -> {
                     _uiEvents.emit(SettingsUiEvent.PlanetImportFailed(importResult.reason))
                 }
@@ -200,22 +186,12 @@ class SettingsViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
-            // 网络 + 文件写入统一放在 IO 线程。
-            val importResult = withContext(Dispatchers.IO) {
-                planetFileStore.importFromUrl(finalUrl)
-            }
+        viewModelScope.launch(Dispatchers.IO) {
+            // 关键逻辑：
+            // URL 下载与设置写回统一由单例状态源处理，避免多层重复写状态。
+            val importResult = settingsStateHolder.importPlanetFromUrl(finalUrl)
             when (importResult) {
-                is PlanetFileStore.ImportResult.Success -> {
-                    updateStateAndPersist {
-                        it.copy(
-                            planetUseCustom = true,
-                            planetSourceType = PlanetSourceType.URL,
-                            planetSourceDisplay = finalUrl,
-                            planetSourceRawValue = finalUrl
-                        )
-                    }
-                }
+                is PlanetFileStore.ImportResult.Success -> Unit
                 is PlanetFileStore.ImportResult.Failure -> {
                     _uiEvents.emit(SettingsUiEvent.PlanetImportFailed(importResult.reason))
                 }
@@ -259,12 +235,10 @@ class SettingsViewModel @Inject constructor(
     private fun updateStateAndPersist(
         reducer: (SettingsUiState) -> SettingsUiState
     ) {
-        val newState = reducer(settingUiState)
-        settingUiState = newState
-
-        // 持久化放在 IO 线程，避免主线程做磁盘写入。
+        // 统一委托给单例状态源执行“更新 + 缓存同步 + 持久化”，
+        // 避免多个 ViewModel 各自写入导致状态互相覆盖。
         viewModelScope.launch(Dispatchers.IO) {
-            settingsStore.writeState(newState)
+            settingsStateHolder.updateState(reducer)
         }
     }
 

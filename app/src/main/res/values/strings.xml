@@ -135,6 +135,9 @@
     <string name="network_detail_title">Network detail</string>
     <string name="network_assigned_ips">Assigned addresses</string>
     <string name="network_no_ip">No address assigned</string>
+    <string name="network_ip_status_disconnected">Disconnected</string>
+    <string name="network_ip_status_pending">Requesting address…</string>
+    <string name="network_ip_status_no_address">No address assigned</string>
     <string name="network_info_label">Network info</string>
     <string name="network_name_label">Name</string>
     <string name="network_type_label">Type</string>

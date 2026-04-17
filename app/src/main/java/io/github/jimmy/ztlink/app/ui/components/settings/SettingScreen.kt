@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -62,6 +63,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -101,6 +103,8 @@ fun SettingScreen(
     externalBottomPadding: Dp = 0.dp,
     @SuppressLint("ModifierParameter") modifier: Modifier = Modifier,
 ) {
+    // 这里允许页面内注入 ViewModel；
+    // 真实设置状态由 SettingsStateHolder（单例）托管，因此不会出现多实例互相覆盖。
     val settings: SettingsViewModel = hiltViewModel()
     val context = LocalContext.current
     val uiState = settings.settingUiState
@@ -351,10 +355,11 @@ private fun ThemeAndDynamicRow(
     Column(modifier = Modifier.padding(vertical = spacing.space12)) {
         Text(
             text  = stringResource(R.string.settings_theme_mode),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(
                 start  = spacing.space16 + 4.dp,
+                bottom = spacing.space4,
             ),
         )
         Row(
@@ -463,8 +468,8 @@ private fun AccentPresetSelector(
     ) {
         Text(
             text  = stringResource(R.string.settings_accent_preset),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         LazyRow(
@@ -554,17 +559,6 @@ private fun SettingSwitchRow(
     val scale        = remember { Animatable(1f) }
 
     Surface(
-        onClick = {
-            if (enabled) {
-                scope.launch {
-                    // 阶段 1：高刚度下潜，确保瞬间点击也有可见反馈
-                    scale.animateTo(0.95f, spring(stiffness = Spring.StiffnessHigh))
-                    // 阶段 2：带有 Bouncy 感的回弹
-                    scale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
-                }
-                onCheckedChange(!checked)
-            }
-        },
         color    = Color.Transparent,
         modifier = Modifier
             .fillMaxWidth()
@@ -572,6 +566,20 @@ private fun SettingSwitchRow(
     ) {
         Row(
             modifier = Modifier
+                .toggleable(
+                    value = checked,
+                    enabled = enabled,
+                    role = Role.Switch,
+                    onValueChange = { newValue ->
+                        scope.launch {
+                            // 阶段 1：高刚度下潜，确保瞬间点击也有可见反馈
+                            scale.animateTo(0.95f, spring(stiffness = Spring.StiffnessHigh))
+                            // 阶段 2：带有 Bouncy 感的回弹
+                            scale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+                        }
+                        onCheckedChange(newValue)
+                    },
+                )
                 .padding(horizontal = spacing.space16, vertical = spacing.space12 + 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -581,7 +589,7 @@ private fun SettingSwitchRow(
             ) {
                 Text(
                     text  = title,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha),
                 )
                 Text(
@@ -593,7 +601,7 @@ private fun SettingSwitchRow(
             Switch(
                 checked         = checked,
                 enabled         = enabled,
-                onCheckedChange = onCheckedChange,
+                onCheckedChange = null,
                 modifier        = Modifier.padding(start = spacing.space12),
             )
         }
@@ -659,7 +667,7 @@ private fun SettingActionRow(
                 ) {
                     Text(
                         text     = title,
-                        style    = MaterialTheme.typography.titleMedium,
+                        style    = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
                         color    = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha),
                         modifier = Modifier.weight(1f),
                         maxLines = 1,

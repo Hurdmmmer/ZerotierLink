@@ -203,6 +203,30 @@ class NetworksViewModel @Inject constructor(
     }
 
     /**
+     * Updates whether this network routes traffic via ZeroTier.
+     *
+     * This only changes persisted network config and must not affect
+     * connection lifecycle state.
+     *
+     * @param networkId network id text.
+     * @param routeViaZeroTier target route flag.
+     */
+    fun toggleRouteViaZeroTier(
+        networkId: String,
+        routeViaZeroTier: Boolean,
+    ) {
+        viewModelScope.launch {
+            val parsedId = NetworkId.parse(networkId) ?: return@launch
+            val current = networkRepository.findById(parsedId) ?: return@launch
+            val nextEntity = current.copy(
+                config = current.config.copy(routeViaZeroTier = routeViaZeroTier),
+            )
+            networkRepository.upsert(nextEntity)
+            loadNetworks()
+        }
+    }
+
+    /**
      * 删除网络及其关联数据。
      *
      * @param networkId 网络 ID 文本。

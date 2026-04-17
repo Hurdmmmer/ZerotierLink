@@ -19,6 +19,7 @@ hiltLifecycleViewmodelCompose = "1.3.0"
 navigationCompose = "2.9.7"
 datastore = "1.2.1"
 materialKolor = "4.1.1"
+uiText = "1.10.6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -45,6 +46,7 @@ androidx-compose-material-icons-extended = { group = "androidx.compose.material"
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 material-kolor = { module = "com.github.ajalt.colormath:colormath", version = "3.6.1" }
 material-kolor-lib = { module = "com.materialkolor:material-kolor", version.ref = "materialKolor" }
+androidx-compose-ui-text = { group = "androidx.compose.ui", name = "ui-text", version.ref = "uiText" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

@@ -12,6 +12,7 @@ import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,11 +52,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
@@ -104,6 +110,7 @@ fun WifiSsidPickerSheet(
             connectedSsid = connectedSsid,
         )
     }
+    val scope = rememberCoroutineScope()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -143,10 +150,35 @@ fun WifiSsidPickerSheet(
                 !locationServiceEnabled -> LocationServiceOffHint()
                 scannedSsids.isEmpty() -> EmptyWifiHint()
                 else -> {
+                    // 不让列表中的手势继续往上传递给父组件
+                    val stopScrollToParent = remember {
+                        object : NestedScrollConnection {
+                            override fun onPostScroll(
+                                consumed: Offset,
+                                available: Offset,
+                                source: NestedScrollSource,
+                            ): Offset {
+                                // BouncyOverScroll 和内部子组件处理完后，
+                                // 剩余的滚动不要再交给更外层父组件
+                                return available
+                            }
+
+                            override suspend fun onPostFling(
+                                consumed: Velocity,
+                                available: Velocity,
+                            ): Velocity {
+                                // fling 的剩余速度也不要继续往上传
+                                return available
+                            }
+                        }
+                    }
+
                     BouncyOverScroll(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 360.dp),
+                            .heightIn(max = 360.dp)
+                            .nestedScroll(stopScrollToParent),
+
                     ) {
                         LazyColumn(
                             modifier = Modifier.fillMaxWidth(),
@@ -163,8 +195,11 @@ fun WifiSsidPickerSheet(
                                     isConnected = isConnected,
                                     isSelected = isSelected,
                                     onClick = {
-                                        onSsidSelected(ssid)
-                                        onDismiss()
+                                        scope.launch {
+                                            onSsidSelected(ssid)
+                                            sheetState.hide()
+                                            onDismiss()
+                                        }
                                     },
                                 )
                             }

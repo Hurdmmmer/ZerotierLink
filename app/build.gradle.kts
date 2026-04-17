@@ -132,6 +132,7 @@ dependencies {
     // Material 3 组件库
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.compose.ui.text)
 
     // 单元测试依赖
     testImplementation(libs.junit)

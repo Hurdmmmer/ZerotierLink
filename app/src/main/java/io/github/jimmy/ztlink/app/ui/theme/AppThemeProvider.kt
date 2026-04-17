@@ -43,7 +43,7 @@ val LocalUpdateTheme = staticCompositionLocalOf<(ThemeSettings) -> Unit> {
 fun AppThemeProvider(
     content: @Composable () -> Unit,
 ) {
-
+    // 这里可独立创建 ViewModel；真实状态来自单例持有器，因此不会与设置页实例冲突。
     val settingsViewModel: SettingsViewModel = hiltViewModel()
     val uiState = settingsViewModel.settingUiState
     val themeSettings = uiState.themeSettings

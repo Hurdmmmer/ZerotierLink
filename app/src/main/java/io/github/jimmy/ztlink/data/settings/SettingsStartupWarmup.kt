@@ -19,8 +19,6 @@ import javax.inject.Singleton
 class SettingsStartupWarmup @Inject constructor(
     /** 设置持久化存储。 */
     private val settingsStore: SettingsStore,
-    /** planet 文件落盘管理器。 */
-    private val planetFileStore: PlanetFileStore,
 ) {
 
     /** 预热互斥锁，避免重复并发预热导致磁盘 IO 重复执行。 */
@@ -32,24 +30,35 @@ class SettingsStartupWarmup @Inject constructor(
     /**
      * 执行一次设置预热。
      *
+     * @param forceRefresh 是否忽略内存缓存并强制读取最新持久化值。
      * @return 预热完成后的设置快照。
      */
-    suspend fun warmup(): SettingsUiState {
-        cachedStateRef.get()?.let { return it }
+    suspend fun warmup(forceRefresh: Boolean = false): SettingsUiState {
+        if (!forceRefresh) {
+            cachedStateRef.get()?.let { return it }
+        }
         return warmupMutex.withLock {
-            cachedStateRef.get()?.let { return@withLock it }
-            val hasPlanetFile = planetFileStore.hasCustomPlanetFile()
-            val shouldForceDisableCustomPlanet = !hasPlanetFile
-            val state = settingsStore.readState(
-                forceDisableCustomPlanet = shouldForceDisableCustomPlanet
-            )
-            if (shouldForceDisableCustomPlanet && state.planetUseCustom) {
-                // 保险兜底：若历史状态异常，强制回写关闭开关，避免后续状态不一致。
-                settingsStore.disableCustomPlanet()
+            if (!forceRefresh) {
+                cachedStateRef.get()?.let { return@withLock it }
             }
+            // 关键逻辑：
+            // warmup 仅负责“读取并缓存用户设置”，不在此阶段改写用户存档。
+            // 否则会出现用户刚保存的 planet 配置在下次进入页面时被强制回退的体验问题。
+            val state = settingsStore.readState(forceDisableCustomPlanet = false)
             cachedStateRef.set(state)
             state
         }
+    }
+
+    /**
+     * 更新预热缓存。
+     *
+     * 用途：
+     * 1. 设置页写入后同步内存快照，避免后续新实例仍读取旧缓存；
+     * 2. 保持“首帧快照”与最新用户设置一致。
+     */
+    fun updateCachedState(state: SettingsUiState) {
+        cachedStateRef.set(state)
     }
 
     /**

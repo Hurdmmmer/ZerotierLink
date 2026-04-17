@@ -14,7 +14,7 @@ import io.github.jimmy.ztlink.R
  */
 private val ZtCjkSans = FontFamily(
     Font(R.font.noto_sans_sc_regular, FontWeight.Normal),
-    Font(R.font.noto_sans_sc_medium, FontWeight.Thin),
+    Font(R.font.noto_sans_sc_medium, FontWeight.Medium),
     Font(R.font.noto_sans_sc_semibold, FontWeight.SemiBold)
 )
 
@@ -37,32 +37,74 @@ val ZerotierLinkTypography = Typography(
         fontFamily = ZtCjkSans,
         fontWeight = FontWeight.SemiBold,
         fontSize = 30.sp,
+        lineHeight = 36.sp,
         letterSpacing = (-0.2).sp
     ),
     headlineMedium = TextStyle(
         fontFamily = ZtCjkSans,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 22.sp
+        fontSize = 22.sp,
+        lineHeight = 28.sp
+    ),
+    headlineSmall = TextStyle(
+        fontFamily = ZtCjkSans,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 20.sp,
+        lineHeight = 26.sp
+    ),
+    titleLarge = TextStyle(
+        fontFamily = ZtCjkSans,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp
     ),
     titleMedium = TextStyle(
         fontFamily = ZtCjkSans,
         fontWeight = FontWeight.Medium,
-        fontSize = 16.sp
+        fontSize = 16.sp,
+        lineHeight = 22.sp
+    ),
+    titleSmall = TextStyle(
+        fontFamily = ZtCjkSans,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        lineHeight = 20.sp
+    ),
+    bodyLarge = TextStyle(
+        fontFamily = ZtCjkSans,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp
     ),
     bodyMedium = TextStyle(
         fontFamily = ZtCjkSans,
         fontWeight = FontWeight.Normal,
-        fontSize = 12.sp
+        fontSize = 14.sp,
+        lineHeight = 22.sp
+    ),
+    bodySmall = TextStyle(
+        fontFamily = ZtCjkSans,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 18.sp
+    ),
+    labelLarge = TextStyle(
+        fontFamily = ZtCjkSans,
+        fontWeight = FontWeight.Medium,
+        fontSize = 12.sp,
+        lineHeight = 18.sp
     ),
     labelMedium = TextStyle(
         fontFamily = ZtCjkSans,
         fontWeight = FontWeight.Medium,
-        fontSize = 10.sp
+        fontSize = 12.sp,
+        lineHeight = 18.sp
     ),
     labelSmall = TextStyle(
-        fontFamily = ZtMono,
-        fontWeight = FontWeight.Normal,
-        fontSize = 8.sp,
+        fontFamily = ZtCjkSans,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
         letterSpacing = 0.2.sp
     )
 )
