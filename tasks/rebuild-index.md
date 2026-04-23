@@ -160,10 +160,8 @@
     - `whitelistPackages`
     - `includeBuiltInWhitelistPackages`
   - 新增 `AppWhitelistApplier`，用于把白名单应用到 `VpnService.Builder.addDisallowedApplication`
-  - 内置默认绕过包名与老项目对齐：
-    - `com.android.vending`
+  - 内置默认绕过包名（按当前策略仅保留 Android Auto 直连）：
     - `com.google.android.projection.gearhead`
-    - `com.google.android.gms`
 - 待接入：
   - （已完成）在 `ZeroTierVpnService` 隧道重配置链路中调用 `AppWhitelistApplier.apply(...)`
   - 设置页增加“选择应用白名单”交互 UI（当前仅数据与运行时链路已就绪）

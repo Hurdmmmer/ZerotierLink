@@ -44,11 +44,11 @@ data class AppWhitelistApplyResult(
 /**
  * 内置白名单包名集合。
  *
- * 对齐老项目默认策略：避免系统关键组件被 VPN 接管后出现异常。
+ * 按当前产品策略默认仅绕过 Android Auto。
  */
 object BuiltInWhitelistApps {
     val packages: List<String> = listOf(
-        "com.android.vending",
+        // Keep only Android Auto bypass by default.
         "com.google.android.projection.gearhead",
     )
 }

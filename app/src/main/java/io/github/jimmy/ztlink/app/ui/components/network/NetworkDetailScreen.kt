@@ -171,11 +171,6 @@ fun NetworkDetailScreen(
                             )
                             ItemDivider()
                             NetworkDetailMetaLine(
-                                label = stringResource(R.string.network_planet_route_label),
-                                value = planetRouteText,
-                            )
-                            ItemDivider()
-                            NetworkDetailMetaLine(
                                 label = stringResource(R.string.network_mac_label),
                                 value = detail.mac,
                                 valueStyle = MaterialTheme.typography.bodySmall.copy(
