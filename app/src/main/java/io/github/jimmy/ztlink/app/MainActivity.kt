@@ -1,9 +1,15 @@
 package io.github.jimmy.ztlink.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -31,8 +37,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -75,8 +83,37 @@ class MainActivity : ComponentActivity() {
  */
 @Composable
 private fun ZerotierAppRoot() {
+    RequestNotificationPermissionIfNeeded()
     AppThemeProvider {
         ZerotierApp()
+    }
+}
+
+/**
+ * Android 13+ 请求通知权限，确保前台服务状态通知可见。
+ */
+@Composable
+private fun RequestNotificationPermissionIfNeeded() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        return
+    }
+    val context = LocalContext.current
+    val requestPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        Log.i(LOG_TAG, "[$LOG_KEY] 通知权限请求结果 granted=$granted")
+    }
+    LaunchedEffect(Unit) {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            Log.i(LOG_TAG, "[$LOG_KEY] 通知权限已授权")
+            return@LaunchedEffect
+        }
+        Log.i(LOG_TAG, "[$LOG_KEY] 请求通知权限 原因=foreground_status_notification")
+        requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
 
@@ -234,3 +271,6 @@ fun ZerotierBottomBar(
         }
     }
 }
+
+private const val LOG_TAG: String = "MainActivity"
+private const val LOG_KEY: String = "ZTL_CHAIN"

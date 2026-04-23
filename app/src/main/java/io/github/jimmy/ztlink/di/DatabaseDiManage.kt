@@ -28,7 +28,7 @@ import javax.inject.Singleton
  */
 @Module
 @InstallIn(SingletonComponent::class)
-object DatabaseModule {
+object DatabaseDiManage {
 
     /**
      * 提供数据库助手单例。

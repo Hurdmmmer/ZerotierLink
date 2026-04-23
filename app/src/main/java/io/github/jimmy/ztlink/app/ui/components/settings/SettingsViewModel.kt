@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collectLatest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlin.text.Regex
 
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.CommonUiEvent
@@ -122,9 +123,12 @@ class SettingsViewModel @Inject constructor(
             if (enabled) {
                 it.copy(planetUseCustom = true)
             } else {
+                // 关键逻辑：
+                // 关闭自定义 Planet 仅代表“整套内网 SSID 探测策略暂时失效”，
+                // 不应改写 auto route check 的用户选择值。
+                // auto route 开关状态只允许用户主动点击修改。
                 it.copy(
                     planetUseCustom = false,
-                    planetAutoRouteCheck = false
                 )
             }
         }
@@ -137,7 +141,17 @@ class SettingsViewModel @Inject constructor(
      */
     fun togglePlanetAutoRouteCheck(enabled: Boolean) {
         updateStateAndPersist {
-            it.copy(planetAutoRouteCheck = enabled)
+            if (enabled) {
+                it.copy(planetAutoRouteCheck = true)
+            } else {
+                // 关键逻辑：
+                // 用户主动关闭自动探测时，必须立即清空已选择 SSID，
+                // 保证“开关状态”和“探测目标”一致，不留下隐式启用条件。
+                it.copy(
+                    planetAutoRouteCheck = false,
+                    probeWifiSsid = "",
+                )
+            }
         }
     }
 
@@ -148,7 +162,32 @@ class SettingsViewModel @Inject constructor(
      */
     fun updateProbeWifiSsid(probeSSID: String) {
         updateStateAndPersist {
-            it.copy(probeWifiSsid = probeSSID)
+            val normalizedSsid = probeSSID.trim()
+            if (!it.planetUseCustom) {
+                // 关键逻辑：
+                // SSID 探测仅允许在自定义 Planet 模式下生效。
+                // 若当前已关闭自定义 Planet，任何 SSID 变更请求都统一清空并关闭探测。
+                return@updateStateAndPersist it.copy(
+                    planetAutoRouteCheck = false,
+                    probeWifiSsid = "",
+                )
+            }
+
+            if (normalizedSsid.isBlank()) {
+                // 关键逻辑：
+                // 当用户清空 SSID 时，自动探测没有目标，应同步关闭自动探测。
+                it.copy(
+                    planetAutoRouteCheck = false,
+                    probeWifiSsid = "",
+                )
+            } else {
+                // 关键逻辑：
+                // 只要用户选中了 SSID，就强制开启自动探测开关。
+                it.copy(
+                    planetAutoRouteCheck = true,
+                    probeWifiSsid = normalizedSsid,
+                )
+            }
         }
     }
 
@@ -222,6 +261,48 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * 覆盖更新白名单包名列表。
+     *
+     * @param packages 新的包名列表。
+     */
+    fun updateWhitelistAppPackages(packages: List<String>) {
+        val normalized = normalizePackageNames(packages)
+        updateStateAndPersist {
+            it.copy(whitelistAppPackages = normalized)
+        }
+    }
+
+    /**
+     * 新增一个白名单包名。
+     *
+     * @param packageName 包名。
+     */
+    fun addWhitelistAppPackage(packageName: String) {
+        updateStateAndPersist { old ->
+            val merged = normalizePackageNames(old.whitelistAppPackages + packageName)
+            old.copy(whitelistAppPackages = merged)
+        }
+    }
+
+    /**
+     * 删除一个白名单包名。
+     *
+     * @param packageName 包名。
+     */
+    fun removeWhitelistAppPackage(packageName: String) {
+        val normalizedTarget = packageName.trim()
+        if (normalizedTarget.isBlank()) {
+            return
+        }
+        updateStateAndPersist { old ->
+            old.copy(
+                whitelistAppPackages = old.whitelistAppPackages
+                    .filterNot { it == normalizedTarget }
+            )
+        }
+    }
+
+    /**
      * 快捷读取当前主题设置。
      */
     val themeSettings: ThemeSettings
@@ -240,6 +321,25 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             settingsStateHolder.updateState(reducer)
         }
+    }
+
+    /**
+     * 规范化包名列表。
+     *
+     * 规则：
+     * 1. 去除首尾空白；
+     * 2. 过滤空值；
+     * 3. 过滤非法包名；
+     * 4. 去重并保持原始顺序。
+     */
+    private fun normalizePackageNames(values: List<String>): List<String> {
+        val packageRegex = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
+        return values.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filter { packageRegex.matches(it) }
+            .distinct()
+            .toList()
     }
 
 }

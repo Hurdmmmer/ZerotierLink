@@ -60,8 +60,8 @@ class SqliteNetworkDao(
                 null,
                 null,
                 null,
-                // 关键逻辑：最近激活网络优先展示，其次按 networkId 排序。
-                "${NetworkDbEntity.COL_LAST_ACTIVATED} DESC, ${NetworkDbEntity.COL_NETWORK_ID} ASC",
+                // 关键逻辑：列表顺序保持稳定，避免开关动作触发位置跳变。
+                "${NetworkDbEntity.COL_NETWORK_ID} ASC",
             ).use { cursor ->
                 val result = ArrayList<NetworkDbEntity>(cursor.count.coerceAtLeast(0))
                 while (cursor.moveToNext()) {

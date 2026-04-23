@@ -20,6 +20,7 @@ navigationCompose = "2.9.7"
 datastore = "1.2.1"
 materialKolor = "4.1.1"
 uiText = "1.10.6"
+ui = "1.10.6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -47,6 +48,7 @@ androidx-datastore-preferences = { group = "androidx.datastore", name = "datasto
 material-kolor = { module = "com.github.ajalt.colormath:colormath", version = "3.6.1" }
 material-kolor-lib = { module = "com.materialkolor:material-kolor", version.ref = "materialKolor" }
 androidx-compose-ui-text = { group = "androidx.compose.ui", name = "ui-text", version.ref = "uiText" }
+androidx-ui = { group = "androidx.compose.ui", name = "ui", version.ref = "ui" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

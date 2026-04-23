@@ -1,21 +1,16 @@
 package io.github.jimmy.ztlink.app.ui.components.network
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.ExperimentalFoundationApi
+import android.net.VpnService
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,22 +20,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Hub
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -50,8 +44,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,7 +55,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
-import io.github.jimmy.ztlink.app.ui.components.common.MetaLine
 import io.github.jimmy.ztlink.app.ui.components.common.ObserveUiEvents
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 
@@ -70,31 +64,52 @@ fun NetworksScreen(
     onNetworkClick: (String) -> Unit,
     onJoinNetwork: () -> Unit,
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val networks = uiState.networks
-    val nodeId   = ""      // ViewModel 提供
+    val processingIds = uiState.processingIds
+    val nodeId = ""      // ViewModel 提供
     val appVersion = "1.0.0"
+    var pendingEnableNetworkId by remember { mutableStateOf<String?>(null) }
+
+    // 与老项目保持一致：
+    // 点击开启时先走系统 VPN 授权，授权通过后再真正派发 Join。
+    val vpnAuthLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val networkId = pendingEnableNetworkId
+        pendingEnableNetworkId = null
+        if (networkId == null) {
+            return@rememberLauncherForActivityResult
+        }
+        val stillNeedPermission = VpnService.prepare(context) != null
+        if (stillNeedPermission) {
+            viewModel.notifyVpnAuthorizationRequired()
+            return@rememberLauncherForActivityResult
+        }
+        viewModel.requestEnableNetwork(networkId)
+    }
 
     ObserveUiEvents(viewModel.uiEvents)
 
     val dimen = ZtTheme.dimen
 
     Scaffold(
-        modifier       = Modifier.fillMaxSize(),
-        containerColor = Color.Transparent,
+        modifier = Modifier.fillMaxSize(),
+        containerColor = ZtTheme.background.baseColor,
         topBar = {
             AppTopBar(
-                title    = stringResource(R.string.nav_networks),
+                title = stringResource(R.string.nav_networks),
                 // Node ID 截短显示在副标题，完整 ID 在底部状态栏
                 subtitle = nodeId.takeIf { it.isNotBlank() }
                     ?.let { "Node · ${it.take(10)}…" }
                     ?: "",
-                actions  = {
+                actions = {
                     IconButton(onClick = onJoinNetwork) {
                         Icon(
-                            imageVector        = Icons.Filled.Add,
+                            imageVector = Icons.Filled.Add,
                             contentDescription = stringResource(R.string.network_join),
-                            tint               = MaterialTheme.colorScheme.onSurface,
+                            tint = MaterialTheme.colorScheme.onSurface,
                         )
                     }
                 },
@@ -105,18 +120,19 @@ fun NetworksScreen(
         BouncyOverScroll(
             modifier = Modifier
                 .fillMaxSize()
+                .background(ZtTheme.background.baseColor)
                 .padding(top = innerPadding.calculateTopPadding()),
         ) {
             if (networks.isEmpty()) {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     item {
                         Box(
-                            modifier         = Modifier.fillParentMaxSize(),
+                            modifier = Modifier.fillParentMaxSize(),
                             contentAlignment = Alignment.Center,
                         ) {
                             EmptyNetworkHint(
                                 onJoinNetwork = onJoinNetwork,
-                                modifier      = Modifier.padding(
+                                modifier = Modifier.padding(
                                     bottom = innerPadding.calculateBottomPadding(),
                                 ),
                             )
@@ -126,35 +142,55 @@ fun NetworksScreen(
             } else {
                 // 互斥逻辑：预先判断是否有任何网络处于开启状态
                 val hasAnyEnabled = remember(networks) { networks.any { it.isEnabled } }
+                val hasAnyProcessing = remember(processingIds) { processingIds.isNotEmpty() }
 
                 LazyColumn(
-                    modifier       = Modifier
+                    modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = dimen.space16),
                     // top = space8：TopBar 下方只留 8dp，不要过大空隙
                     contentPadding = PaddingValues(
-                        top    = dimen.space8,
+                        top = dimen.space8,
                         bottom = innerPadding.calculateBottomPadding() + dimen.space16,
                     ),
                     verticalArrangement = Arrangement.spacedBy(dimen.space8),
                 ) {
+                    item(key = "planet_route_status") {
+                        PlanetRouteStatusCard(
+                            planetRouteType = uiState.planetRouteType,
+                            rootServerIp = uiState.planetRootServerIp,
+                        )
+                    }
+
                     items(networks, key = { it.networkId }) { network ->
                         var showMenu by remember { mutableStateOf(false) }
 
                         Box {
                             NetworkCard(
-                                network     = network,
+                                network = network,
+                                isProcessing = processingIds.contains(network.networkId),
                                 // 如果已有其他网络开启，且不是本网络，则标记为互斥
-                                isAnyOtherEnabled = hasAnyEnabled && !network.isEnabled,
-                                onToggle    = { enabled ->
-                                    viewModel.toggleNetwork(network.networkId, enabled)
+                                isAnyOtherEnabled = (hasAnyEnabled && !network.isEnabled) ||
+                                        (hasAnyProcessing && !processingIds.contains(network.networkId)),
+                                onToggle = { enabled ->
+                                    if (!enabled) {
+                                        viewModel.toggleNetwork(network.networkId, enabled = false)
+                                        return@NetworkCard
+                                    }
+                                    val prepareIntent = VpnService.prepare(context)
+                                    if (prepareIntent == null) {
+                                        viewModel.requestEnableNetwork(network.networkId)
+                                    } else {
+                                        pendingEnableNetworkId = network.networkId
+                                        vpnAuthLauncher.launch(prepareIntent)
+                                    }
                                 },
-                                onClick     = { onNetworkClick(network.networkId) },
+                                onClick = { onNetworkClick(network.networkId) },
                                 onLongClick = { showMenu = true },
                             )
 
                             DropdownMenu(
-                                expanded         = showMenu,
+                                expanded = showMenu,
                                 onDismissRequest = { showMenu = false },
                             ) {
                                 DropdownMenuItem(
@@ -174,7 +210,7 @@ fun NetworksScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text  = stringResource(R.string.network_delete),
+                                            text = stringResource(R.string.network_delete),
                                             color = MaterialTheme.colorScheme.error,
                                         )
                                     },
@@ -197,8 +233,8 @@ fun NetworksScreen(
 
                     item {
                         BottomStatusBar(
-                            nodeId      = nodeId,
-                            appVersion  = appVersion,
+                            nodeId = nodeId,
+                            appVersion = appVersion,
                         )
                     }
                 }
@@ -216,37 +252,37 @@ private fun EmptyNetworkHint(
 ) {
     val dimen = ZtTheme.dimen
     Column(
-        modifier            = modifier.padding(dimen.space24),
+        modifier = modifier.padding(dimen.space24),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(
-            imageVector        = Icons.Outlined.Hub,
+            imageVector = Icons.Outlined.Hub,
             contentDescription = null,
-            modifier           = Modifier.size(48.dp),
-            tint               = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(48.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(dimen.space12))
         Text(
-            text  = stringResource(R.string.network_empty_title),
+            text = stringResource(R.string.network_empty_title),
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )
         Spacer(Modifier.height(dimen.space4))
         Text(
-            text  = stringResource(R.string.network_empty_body),
+            text = stringResource(R.string.network_empty_body),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(dimen.space20))
         androidx.compose.material3.FilledTonalButton(
             onClick = onJoinNetwork,
-            shape   = MaterialTheme.shapes.medium,
+            shape = MaterialTheme.shapes.medium,
         ) {
             Icon(
-                imageVector        = Icons.Filled.Add,
+                imageVector = Icons.Filled.Add,
                 contentDescription = null,
-                modifier           = Modifier.size(18.dp),
+                modifier = Modifier.size(18.dp),
             )
             Spacer(Modifier.width(dimen.space8))
             Text(stringResource(R.string.network_join))
@@ -255,17 +291,20 @@ private fun EmptyNetworkHint(
 }
 
 @Composable
-private fun BottomStatusBar(nodeId: String, appVersion: String) {
+private fun BottomStatusBar(
+    nodeId: String,
+    appVersion: String,
+) {
     val dimen = ZtTheme.dimen
     Column(
-        modifier            = Modifier
+        modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = dimen.space16),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(
-            verticalAlignment     = Alignment.CenterVertically,
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(dimen.space8),
         ) {
             Box(
@@ -275,19 +314,125 @@ private fun BottomStatusBar(nodeId: String, appVersion: String) {
                     .background(MaterialTheme.colorScheme.tertiary),
             )
             Text(
-                text  = "ZeroTier Link $appVersion",
+                text = "ZeroTier Link $appVersion",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
             )
         }
         if (nodeId.isNotBlank()) {
             Text(
-                text  = nodeId,
+                text = nodeId,
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontFamily = FontFamily.Monospace,
                 ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
             )
+        }
+    }
+}
+
+@Composable
+private fun PlanetRouteStatusCard(
+    planetRouteType: PlanetRouteType,
+    rootServerIp: String?,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    val accentColor = when (planetRouteType) {
+        PlanetRouteType.OFFICIAL     -> colorScheme.primary
+        PlanetRouteType.NON_OFFICIAL -> colorScheme.tertiary
+    }
+
+    data class Spec(
+        val icon: ImageVector,
+        val badgeText: String,
+        val title: String,
+        val desc: String,
+    )
+
+    val spec = when (planetRouteType) {
+        PlanetRouteType.OFFICIAL -> Spec(
+            icon      = Icons.Outlined.Public,
+            badgeText = stringResource(R.string.network_planet_route_chip_official),
+            title     = rootServerIp ?: stringResource(R.string.network_planet_route_official),
+            desc      = if (rootServerIp != null)
+                stringResource(R.string.network_planet_route_summary_root_server_ip, rootServerIp)
+            else
+                stringResource(R.string.network_planet_route_summary_official),
+        )
+        PlanetRouteType.NON_OFFICIAL -> Spec(
+            icon      = Icons.Outlined.Storage,
+            badgeText = stringResource(R.string.network_planet_route_chip_non_official),
+            title     = rootServerIp ?: stringResource(R.string.network_planet_route_non_official),
+            desc      = if (rootServerIp != null)
+                stringResource(R.string.network_planet_route_summary_root_server_ip, rootServerIp)
+            else
+                stringResource(R.string.network_planet_route_summary_non_official),
+        )
+    }
+
+    Surface(
+        modifier        = Modifier.fillMaxWidth(),
+        shape           = MaterialTheme.shapes.large,
+        color           = colorScheme.surfaceContainerHigh,
+        tonalElevation  = 0.dp,
+        shadowElevation = 0.dp,
+        border          = BorderStroke(0.5.dp, colorScheme.outlineVariant.copy(alpha = 0.35f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+        ) {
+            Row(
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // 图标色块 — 与 Banner 保持一致
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(color = Color.Transparent),  // 背景色由 Icon 的 tint 决定
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector        = spec.icon,
+                        contentDescription = null,
+                        tint               = accentColor,
+                        modifier           = Modifier.size(32.dp),
+                    )
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text  = stringResource(R.string.network_planet_panel_title),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text     = spec.title,
+                        style    = MaterialTheme.typography.titleSmall,
+                        color    = colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // 胶囊 badge — 与 Banner 保持一致
+                Surface(
+                    shape  = CircleShape,
+                    color  = accentColor.copy(alpha = 0.10f),
+                    border = BorderStroke(0.5.dp, accentColor.copy(alpha = 0.30f)),
+                ) {
+                    Text(
+                        text     = spec.badgeText,
+                        style    = MaterialTheme.typography.labelSmall,
+                        color    = accentColor,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
         }
     }
 }

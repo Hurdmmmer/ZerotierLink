@@ -108,6 +108,16 @@ data class SettingsUiState(
     val disableIpv6: Boolean = false,
 
     /**
+     * 应用白名单（绕过内核转发）的包名列表。
+     *
+     * 规则：
+     * 1. 列表中的应用将不进入 VPN 隧道；
+     * 2. 流量会直接走系统默认网络；
+     * 3. 仅存放标准包名文本，不存放展示名称。
+     */
+    val whitelistAppPackages: List<String> = emptyList(),
+
+    /**
      * 是否不再提示“通知权限未开启”提醒。
      * 该项通常不在设置页显式展示，但可作为统一状态的一部分保留。
      */
@@ -122,8 +132,16 @@ data class SettingsUiState(
 
     /**
      * 探测 IP 输入是否可用。
-     * 规则：必须同时启用自定义 Planet 与自动路由探测。
+     * 规则：
+     * 1. 仅当启用自定义 Planet 时可编辑；
+     * 2. 必须先开启自动路由探测，才允许点击选择 SSID。
      */
     val planetProbeIpEnabled: Boolean
         get() = planetUseCustom && planetAutoRouteCheck
+
+    /**
+     * 是否配置了应用白名单。
+     */
+    val hasWhitelistApps: Boolean
+        get() = whitelistAppPackages.isNotEmpty()
 }

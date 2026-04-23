@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS"
+        tools:targetApi="tiramisu" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- Android 13+ -->
@@ -36,12 +39,18 @@
             </intent-filter>
         </activity>
 
-        <!-- 开机自启骨架服务：后续在此接入真实 ZeroTier 自动入网逻辑 -->
+        <!-- 主连接服务：负责 Runtime 编排、命令执行、通知与 VPN 隧道生命周期 -->
         <service
-            android:name=".service.startup.ZeroTierBootService"
+            android:name=".service.ZeroTierVpnService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            tools:ignore="VpnServicePolicy">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
 
         <!-- 开机广播接收器：按 startOnBoot 开关决定是否拉起服务 -->
         <receiver
@@ -56,3 +65,4 @@
     </application>
 
 </manifest>
+

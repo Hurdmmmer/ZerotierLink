@@ -3,10 +3,10 @@ package io.github.jimmy.ztlink.service.startup
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
-import androidx.core.content.ContextCompat
 import io.github.jimmy.ztlink.data.settings.SettingsStore
+import io.github.jimmy.ztlink.service.ServiceAction
+import io.github.jimmy.ztlink.service.ServiceActionDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
  * 教学说明：
  * 1. 接收器只负责“开机事件 -> 是否触发服务”，不做复杂业务。
  * 2. 具体的 ZeroTier 启动与自动入网逻辑放在 Service 里，职责更清晰。
- * 3. 当前处于脚手架阶段，先把链路打通，核心 join 功能后续再接。
+ * 3. 统一通过 ServiceActionDispatcher 派发启动动作，避免入口分叉。
  */
 class BootCompletedReceiver : BroadcastReceiver() {
 
@@ -46,7 +46,7 @@ class BootCompletedReceiver : BroadcastReceiver() {
             return
         }
 
-        // goAsync：
+        // goAsync 异步处理：
         // BroadcastReceiver 默认要求 onReceive 快速返回；
         // 我们这里要异步读 DataStore，所以用 goAsync + finish 防止 ANR。
         val pendingResult = goAsync()
@@ -60,20 +60,13 @@ class BootCompletedReceiver : BroadcastReceiver() {
                     return@launch
                 }
 
-                val serviceIntent = Intent(
-                    context.applicationContext,
-                    ZeroTierBootService::class.java
-                ).apply {
-                    this.action = ZeroTierBootService.ACTION_BOOT_AUTOSTART
-                }
-
-                // Android 8.0+ 后台启动服务限制：
-                // 必须走前台服务启动入口，服务端需要尽快 startForeground。
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    ContextCompat.startForegroundService(context.applicationContext, serviceIntent)
-                } else {
-                    context.applicationContext.startService(serviceIntent)
-                }
+                ServiceActionDispatcher(context.applicationContext).dispatch(
+                    ServiceAction.StartOrResume(
+                        targetNetworkId = null,
+                        hasExplicitNetworkId = false,
+                        reason = "boot_autostart",
+                    ),
+                )
                 Log.i(TAG, "Boot autostart requested. action=$action")
             } catch (t: Throwable) {
                 Log.e(TAG, "Boot autostart failed.", t)

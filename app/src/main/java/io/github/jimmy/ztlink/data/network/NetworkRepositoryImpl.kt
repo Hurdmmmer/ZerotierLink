@@ -8,14 +8,18 @@ import io.github.jimmy.ztlink.data.network.local.AssignedAddressDao
 import io.github.jimmy.ztlink.data.network.local.AssignedAddressDbEntity
 import io.github.jimmy.ztlink.data.network.local.DnsServerDao
 import io.github.jimmy.ztlink.data.network.local.DnsServerDbEntity
-import io.github.jimmy.ztlink.model.network.NetworkConfigEntity
-import io.github.jimmy.ztlink.model.network.NetworkConnectionStatus
-import io.github.jimmy.ztlink.model.network.NetworkDnsMode
+import io.github.jimmy.ztlink.model.network.NetworkConfig
+import io.github.jimmy.ztlink.util.enums.NetworkStatusEnum
+import io.github.jimmy.ztlink.util.enums.NetworkDnsModeEnum
 import io.github.jimmy.ztlink.model.network.NetworkEntity
 import io.github.jimmy.ztlink.model.network.NetworkId
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.collections.map
 
 /**
@@ -37,6 +41,19 @@ class NetworkRepositoryImpl(
     /** IO 调度器。 */
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : NetworkRepository {
+    /** 数据版本号流，用于触发响应式重读。 */
+    private val dataVersion: MutableStateFlow<Long> = MutableStateFlow(0L)
+
+    /** 自增版本号生成器。 */
+    private val versionGenerator: AtomicLong = AtomicLong(0L)
+
+    override fun observeAll(): Flow<List<NetworkEntity>> {
+        return dataVersion.map {
+            withContext(ioDispatcher) {
+                listAllInternal()
+            }
+        }
+    }
 
     override suspend fun upsert(entity: NetworkEntity) = withContext(ioDispatcher) {
         val now = System.currentTimeMillis()
@@ -51,6 +68,7 @@ class NetworkRepositoryImpl(
             networkId = networkId,
             entities = entity.toDnsServerRecordEntities(now = now),
         )
+        notifyDataChanged()
     }
 
     override suspend fun findById(networkId: NetworkId): NetworkEntity? = withContext(ioDispatcher) {
@@ -62,7 +80,38 @@ class NetworkRepositoryImpl(
     }
 
     override suspend fun listAll(): List<NetworkEntity> = withContext(ioDispatcher) {
-        networkDao.listAll().map { network ->
+        listAllInternal()
+    }
+
+    override suspend fun deleteById(networkId: NetworkId) = withContext(ioDispatcher) {
+        networkDao.deleteById(networkId.value)
+        networkConfigDao.deleteByNetworkId(networkId.value)
+        assignedAddressDao.deleteByNetworkId(networkId.value)
+        dnsServerDao.deleteByNetworkId(networkId.value)
+        notifyDataChanged()
+    }
+
+    override suspend fun setLastActivated(networkId: NetworkId) = withContext(ioDispatcher) {
+        // 关键逻辑：先清空，再置位，保证只有一个最近激活网络。
+        networkDao.clearLastActivated()
+        networkDao.setLastActivated(networkId.value, true)
+        notifyDataChanged()
+    }
+
+    override suspend fun findLastActivated(): NetworkEntity? = withContext(ioDispatcher) {
+        val lastActivated = networkDao.listAll().firstOrNull { it.lastActivated } ?: return@withContext null
+        lastActivated.toDomainEntity(
+            config = networkConfigDao.findByNetworkId(lastActivated.networkId),
+            addresses = assignedAddressDao.listByNetworkId(lastActivated.networkId),
+            dnsServers = dnsServerDao.listByNetworkId(lastActivated.networkId),
+        )
+    }
+
+    /**
+     * 读取全部网络实体内部实现。
+     */
+    private fun listAllInternal(): List<NetworkEntity> {
+        return networkDao.listAll().map { network ->
             network.toDomainEntity(
                 config = networkConfigDao.findByNetworkId(network.networkId),
                 addresses = assignedAddressDao.listByNetworkId(network.networkId),
@@ -71,17 +120,11 @@ class NetworkRepositoryImpl(
         }
     }
 
-    override suspend fun deleteById(networkId: NetworkId) = withContext(ioDispatcher) {
-        networkDao.deleteById(networkId.value)
-        networkConfigDao.deleteByNetworkId(networkId.value)
-        assignedAddressDao.deleteByNetworkId(networkId.value)
-        dnsServerDao.deleteByNetworkId(networkId.value)
-    }
-
-    override suspend fun setLastActivated(networkId: NetworkId) = withContext(ioDispatcher) {
-        // 关键逻辑：先清空，再置位，保证只有一个最近激活网络。
-        networkDao.clearLastActivated()
-        networkDao.setLastActivated(networkId.value, true)
+    /**
+     * 通知外层数据已变更，触发观察流重读。
+     */
+    private fun notifyDataChanged() {
+        dataVersion.value = versionGenerator.incrementAndGet()
     }
 
     /**
@@ -185,8 +228,8 @@ class NetworkRepositoryImpl(
         val configRecord = config ?: NetworkConfigDbEntity(
             networkId = networkId,
             routeViaZeroTier = false,
-            dnsModeCode = NetworkDnsMode.NONE.code,
-            statusName = NetworkConnectionStatus.DISCONNECTED.name,
+            dnsModeCode = NetworkDnsModeEnum.NONE.code,
+            statusName = NetworkStatusEnum.DISCONNECTED.name,
             mac = "",
             mtu = null,
             broadcastEnabled = false,
@@ -200,13 +243,13 @@ class NetworkRepositoryImpl(
             displayName = networkName,
             isEnabled = isEnabled,
             lastActivated = lastActivated,
-            config = NetworkConfigEntity(
+            config = NetworkConfig(
                 routeViaZeroTier = configRecord.routeViaZeroTier,
-                dnsMode = NetworkDnsMode.fromCode(configRecord.dnsModeCode),
+                dnsMode = NetworkDnsModeEnum.fromCode(configRecord.dnsModeCode),
                 customDns = dnsList.serializeStringList(),
             ),
-            status = runCatching { NetworkConnectionStatus.valueOf(configRecord.statusName) }
-                .getOrDefault(NetworkConnectionStatus.UNKNOWN),
+            status = runCatching { NetworkStatusEnum.valueOf(configRecord.statusName) }
+                .getOrDefault(NetworkStatusEnum.UNKNOWN),
             assignedIps = addresses.map { it.toCidrAddressString() },
             dnsServers = dnsList,
             mac = configRecord.mac,

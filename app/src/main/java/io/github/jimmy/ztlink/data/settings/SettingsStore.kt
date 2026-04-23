@@ -43,24 +43,40 @@ class SettingsStore @Inject constructor(
             name = SettingsKeys.PREFS_NAME
         )
 
-        // Theme
+        // --- 主题相关配置 (Theme) ---
+        /** 主题模式（跟随系统、深色、浅色） */
         private val KEY_THEME_MODE = stringPreferencesKey(SettingsKeys.THEME_MODE)
+        /** 是否启用动态配色 (Android 12+ Material You) */
         private val KEY_DYNAMIC_COLOR = booleanPreferencesKey(SettingsKeys.DYNAMIC_COLOR)
+        /** 强调色预设 */
         private val KEY_ACCENT_PRESET = stringPreferencesKey(SettingsKeys.ACCENT_PRESET)
 
-        // General / Planet
+        // --- 常规与 Planet 配置 (General / Planet) ---
+        /** 是否开机自启动服务 */
         private val KEY_START_ON_BOOT = booleanPreferencesKey(SettingsKeys.START_ON_BOOT)
+        /** 是否使用自定义 Planet 文件 */
         private val KEY_PLANET_USE_CUSTOM = booleanPreferencesKey(SettingsKeys.PLANET_USE_CUSTOM)
+        /** 是否自动检查 Planet 路由 */
         private val KEY_PLANET_AUTO_ROUTE_CHECK = booleanPreferencesKey(SettingsKeys.PLANET_AUTO_ROUTE_CHECK)
+        /** 触发自动连接的指定 WiFi SSID */
         private val KEY_PLANET_PROBE_WIFI_SSID = stringPreferencesKey(SettingsKeys.PLANET_PROBE_WIFI_SSID)
+        /** Planet 来源类型（无、本地文件、URL） */
         private val KEY_PLANET_SOURCE_TYPE = stringPreferencesKey(SettingsKeys.PLANET_SOURCE_TYPE)
+        /** Planet 来源的显示名称 */
         private val KEY_PLANET_SOURCE_DISPLAY = stringPreferencesKey(SettingsKeys.PLANET_SOURCE_DISPLAY)
+        /** Planet 来源的原始值（文件路径或下载链接） */
         private val KEY_PLANET_SOURCE_RAW_VALUE = stringPreferencesKey(SettingsKeys.PLANET_SOURCE_RAW_VALUE)
 
-        // Network
+        // --- 网络相关配置 (Network) ---
+        /** 是否允许在蜂窝网络（移动数据）下连接 VPN */
         private val KEY_NETWORK_USE_CELLULAR_DATA =
             booleanPreferencesKey(SettingsKeys.NETWORK_USE_CELLULAR_DATA)
+        /** 是否在 VPN 中禁用 IPv6 */
         private val KEY_NETWORK_DISABLE_IPV6 = booleanPreferencesKey(SettingsKeys.NETWORK_DISABLE_IPV6)
+        /** 应用白名单包名列表（分应用代理，换行符分隔） */
+        private val KEY_NETWORK_WHITELIST_APP_PACKAGES =
+            stringPreferencesKey(SettingsKeys.NETWORK_WHITELIST_APP_PACKAGES)
+        /** 是否禁用“未开启通知”的弹窗警告 */
         private val KEY_DISABLE_NO_NOTIFICATION_ALERT =
             booleanPreferencesKey(SettingsKeys.DISABLE_NO_NOTIFICATION_ALERT)
     }
@@ -91,6 +107,7 @@ class SettingsStore @Inject constructor(
             planetSourceRawValue = prefs[KEY_PLANET_SOURCE_RAW_VALUE] ?: "",
             useCellularData = prefs[KEY_NETWORK_USE_CELLULAR_DATA] ?: false,
             disableIpv6 = prefs[KEY_NETWORK_DISABLE_IPV6] ?: false,
+            whitelistAppPackages = decodeStringList(prefs[KEY_NETWORK_WHITELIST_APP_PACKAGES]),
             disableNoNotificationAlert = prefs[KEY_DISABLE_NO_NOTIFICATION_ALERT] ?: false
         )
     }
@@ -129,6 +146,7 @@ class SettingsStore @Inject constructor(
             // Network
             prefs[KEY_NETWORK_USE_CELLULAR_DATA] = state.useCellularData
             prefs[KEY_NETWORK_DISABLE_IPV6] = state.disableIpv6
+            prefs[KEY_NETWORK_WHITELIST_APP_PACKAGES] = encodeStringList(state.whitelistAppPackages)
             prefs[KEY_DISABLE_NO_NOTIFICATION_ALERT] = state.disableNoNotificationAlert
         }
     }
@@ -185,4 +203,33 @@ class SettingsStore @Inject constructor(
     private fun parsePlanetSourceType(raw: String?): PlanetSourceType = runCatching {
         PlanetSourceType.valueOf(raw ?: PlanetSourceType.NONE.name)
     }.getOrDefault(PlanetSourceType.NONE)
+
+    /**
+     * 把字符串列表编码为单字符串。
+     *
+     * 为什么用换行分隔：
+     * 1. 包名天然不含换行，拆分稳定；
+     * 2. 可直接人工查看，便于排障。
+     */
+    private fun encodeStringList(values: List<String>): String {
+        return values.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString(separator = "\n")
+    }
+
+    /**
+     * 把编码字符串解码为字符串列表。
+     */
+    private fun decodeStringList(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) {
+            return emptyList()
+        }
+        return raw.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .toList()
+    }
 }

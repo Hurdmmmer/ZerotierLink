@@ -6,6 +6,7 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
@@ -203,4 +204,8 @@ object ZtTheme {
     /** 背景与氛围层（如列表项、卡片在不同状态下的底色） */
     val background: ZtBackgroundTokens
         @Composable @ReadOnlyComposable get() = LocalZtBackgroundTokens.current
+
+    /** 统一圆角令牌访问入口（映射 MaterialTheme.shapes）。 */
+    val shapes: Shapes
+        @Composable @ReadOnlyComposable get() = MaterialTheme.shapes
 }

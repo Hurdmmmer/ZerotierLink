@@ -133,6 +133,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.compose.ui.text)
+    implementation(libs.androidx.ui)
 
     // 单元测试依赖
     testImplementation(libs.junit)

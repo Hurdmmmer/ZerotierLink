@@ -37,6 +37,8 @@ object SettingsKeys {
     const val NETWORK_USE_CELLULAR_DATA = "network_use_cellular_data"
     /** 是否禁用 IPv6。 */
     const val NETWORK_DISABLE_IPV6 = "network_disable_ipv6"
+    /** 应用白名单（自动跳过该 App 转发）的包名列表。 */
+    const val NETWORK_WHITELIST_APP_PACKAGES = "network_bypass_app_packages"
     /** 是否不再提示通知权限提醒。 */
     const val DISABLE_NO_NOTIFICATION_ALERT = "disable_no_notification_alert"
 }

@@ -12,7 +12,6 @@ import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -74,6 +73,7 @@ import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
 import io.github.jimmy.ztlink.app.ui.components.common.ItemDivider
 import io.github.jimmy.ztlink.app.ui.components.common.ObserveUiEvents
+import io.github.jimmy.ztlink.app.ui.components.common.Pill
 import io.github.jimmy.ztlink.app.ui.theme.AccentPreset
 import io.github.jimmy.ztlink.app.ui.theme.LocalThemeSettings
 import io.github.jimmy.ztlink.app.ui.theme.LocalUpdateTheme
@@ -677,19 +677,16 @@ private fun SettingActionRow(
                     if (trailingLabel != null) {
                         Spacer(Modifier.width(spacing.space8))
                         // 状态标签采用 "Pill/Chip" 设计，突出显示当前配置状态
-                        Surface(
-                            color  = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
-                            shape  = CircleShape,
-                            border = BorderStroke(
-                                width = 0.5.dp,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                            ),
-                            modifier = Modifier.widthIn(max = 140.dp)
+                        Pill(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                            borderWidth = 0.5.dp,
+                            borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.widthIn(max = 140.dp),
                         ) {
                             Row(
                                 verticalAlignment     = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier              = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                                 if (trailingIcon != null) {
                                     Icon(

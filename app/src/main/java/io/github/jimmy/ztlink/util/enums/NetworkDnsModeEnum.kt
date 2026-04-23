@@ -1,9 +1,9 @@
-package io.github.jimmy.ztlink.model.network
+package io.github.jimmy.ztlink.util.enums
 
 /**
  * 已加入网络使用的 DNS 模式。
  */
-enum class NetworkDnsMode(
+enum class NetworkDnsModeEnum(
     /** 持久化使用的整型编码。 */
     val code: Int
 ) {
@@ -15,6 +15,6 @@ enum class NetworkDnsMode(
     CUSTOM(2);
 
     companion object {
-        fun fromCode(code: Int): NetworkDnsMode = entries.firstOrNull { it.code == code } ?: NONE
+        fun fromCode(code: Int): NetworkDnsModeEnum = entries.firstOrNull { it.code == code } ?: NONE
     }
 }

@@ -19,6 +19,11 @@ interface CommonUiEvent {
         val messageRes: Int
     }
 
+    /** 纯文本 Toast 事件接口 */
+    interface ShowToastText : CommonUiEvent {
+        val messageText: String
+    }
+
     /** 剪贴板事件接口 */
     interface CopyToClipboard : CommonUiEvent {
         val text: String
@@ -42,6 +47,9 @@ fun <T> ObserveUiEvents(
             when (event) {
                 is CommonUiEvent.ShowToast -> {
                     Toast.makeText(context, context.getString(event.messageRes), Toast.LENGTH_SHORT).show()
+                }
+                is CommonUiEvent.ShowToastText -> {
+                    Toast.makeText(context, event.messageText, Toast.LENGTH_SHORT).show()
                 }
                 is CommonUiEvent.CopyToClipboard -> {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

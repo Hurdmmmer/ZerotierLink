@@ -6,8 +6,10 @@ import androidx.compose.runtime.Immutable
 /** 网络连接状态 */
 enum class NetworkStatus {
     CONNECTED,      // 已连接（绿色）
+    MONITORING,     // 监控中（内网命中，内核暂停）
     REQUESTING_CONFIGURATION, // 正在请求配置（等待控制器授权前置态）
     AUTHENTICATION_REQUIRED,  // 需要控制器授权（授权等待态）
+    NO_CONNECTION,  // 开关开启但链路不可达（无连接）
     DISCONNECTED,   // 已断开（灰色）
     ACCESS_DENIED,  // 无访问权限（红色）
     NOT_FOUND,      // 网络不存在（红色）
@@ -15,6 +17,12 @@ enum class NetworkStatus {
 
 /** DNS 模式 */
 enum class DnsMode { NONE, NETWORK, CUSTOM }
+
+/** Planet 链路来源 */
+enum class PlanetRouteType {
+    OFFICIAL,
+    NON_OFFICIAL,
+}
 
 /** 列表页单条网络卡片数据 */
 @Immutable

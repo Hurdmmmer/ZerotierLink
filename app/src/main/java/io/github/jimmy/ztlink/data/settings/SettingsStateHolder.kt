@@ -45,7 +45,9 @@ class SettingsStateHolder @Inject constructor(
      * - 若缓存不存在，使用默认值兜底，后续再强制刷新。
      */
     private val _state: MutableStateFlow<SettingsUiState> = MutableStateFlow(
-        settingsStartupWarmup.cachedStateOrNull() ?: SettingsUiState()
+        normalizeIntranetProbePolicyState(
+            settingsStartupWarmup.cachedStateOrNull() ?: SettingsUiState(),
+        ),
     )
 
     /**
@@ -68,7 +70,15 @@ class SettingsStateHolder @Inject constructor(
      */
     suspend fun refreshFromStore(forceRefresh: Boolean): SettingsUiState {
         return stateMutex.withLock {
-            val latestState = settingsStartupWarmup.warmup(forceRefresh = forceRefresh)
+            val rawState = settingsStartupWarmup.warmup(forceRefresh = forceRefresh)
+            val latestState = normalizeIntranetProbePolicyState(rawState)
+            if (latestState != rawState) {
+                // 关键逻辑：
+                // 当历史持久化数据不满足当前策略不变式时，刷新阶段立即回写，
+                // 避免后续仍被旧数据污染（例如 auto 关但 SSID 仍有值）。
+                settingsStartupWarmup.updateCachedState(latestState)
+                settingsStore.writeState(latestState)
+            }
             _state.value = latestState
             latestState
         }
@@ -86,7 +96,6 @@ class SettingsStateHolder @Inject constructor(
         return stateMutex.withLock {
             val newState = reducer(_state.value)
             applyStateLocked(newState)
-            newState
         }
     }
 
@@ -158,12 +167,41 @@ class SettingsStateHolder @Inject constructor(
      *
      * @param newState 需要生效的新设置快照。
      */
-    private suspend fun applyStateLocked(newState: SettingsUiState) {
+    private suspend fun applyStateLocked(newState: SettingsUiState): SettingsUiState {
+        val normalizedState = normalizeIntranetProbePolicyState(newState)
         // 先更新内存状态，确保 UI 订阅方立即看到最新值。
-        _state.value = newState
+        _state.value = normalizedState
         // 同步更新 warmup 缓存，避免后续新实例回退到旧快照。
-        settingsStartupWarmup.updateCachedState(newState)
+        settingsStartupWarmup.updateCachedState(normalizedState)
         // 最后写入持久化层，保证重启后仍能恢复。
-        settingsStore.writeState(newState)
+        settingsStore.writeState(normalizedState)
+        return normalizedState
+    }
+
+    /**
+     * 归一化“内网 SSID 探测”相关状态，保证策略语义一致。
+     *
+     * 关键逻辑：
+     * 1. 自动探测关闭时，必须清空 SSID；
+     * 2. 自定义 Planet 关闭时，策略层会整体禁用探测功能，但不改写 auto 开关值；
+     * 3. SSID 为空时，不强制改写 auto 开关，允许用户先手动开启再去选择 SSID。
+     */
+    private fun normalizeIntranetProbePolicyState(state: SettingsUiState): SettingsUiState {
+        if (!state.planetAutoRouteCheck) {
+            // 关键逻辑：
+            // 只要 auto route check 关闭，就把 SSID 清空，避免残留探测目标。
+            return state.copy(probeWifiSsid = "")
+        }
+
+        val normalizedSsid = state.probeWifiSsid.trim()
+        if (normalizedSsid.isBlank()) {
+            // 关键逻辑：
+            // SSID 为空时保留用户手动开启的 auto 状态，修复“关闭后无法再打开”的问题。
+            return state.copy(probeWifiSsid = "")
+        }
+        return state.copy(
+            planetAutoRouteCheck = true,
+            probeWifiSsid = normalizedSsid,
+        )
     }
 }

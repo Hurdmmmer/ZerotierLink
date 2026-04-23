@@ -1,9 +1,9 @@
-package io.github.jimmy.ztlink.model.network
+package io.github.jimmy.ztlink.util.enums
 
 /**
  * 运行时网络状态，语义与 ZeroTier 状态对齐。
  */
-enum class NetworkConnectionStatus {
+enum class NetworkStatusEnum {
     /** 已发起入网，等待控制器下发配置。 */
     REQUESTING_CONFIGURATION,
     /** 入网成功且可正常转发。 */

@@ -1,0 +1,255 @@
+package io.github.jimmy.ztlink.service.controller
+
+import com.zerotier.sdk.VirtualNetworkConfig
+import com.zerotier.sdk.VirtualNetworkConfigOperation
+import com.zerotier.sdk.VirtualNetworkStatus
+import android.util.Log
+import io.github.jimmy.ztlink.data.network.NetworkRepository
+import io.github.jimmy.ztlink.model.network.NetworkId
+import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
+import io.github.jimmy.ztlink.service.policy.RoutePolicyCoordinator
+import io.github.jimmy.ztlink.service.runtime.RuntimeContext
+import io.github.jimmy.ztlink.service.ServiceAction
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+
+/**
+ * 服务网络观察控制器。
+ *
+ * 职责：
+ * 1. 监听系统网络变化，触发自动路由策略复检；
+ * 2. 监听内核网络配置回调，触发配置同步与隧道重配置；
+ * 3. 仅做“事件到动作”的转换，不承载 runtime 启停编排。
+ */
+class ServiceNetworkController(
+    private val serviceScope: CoroutineScope,
+    private val networkChangeObserver: NetworkChangeObserver,
+    private val routePolicyCoordinator: RoutePolicyCoordinator,
+    private val runtimeContext: RuntimeContext,
+    private val dispatchAction: suspend (ServiceAction) -> Unit,
+    private val networkRepository: NetworkRepository,
+) {
+
+    /** 是否已启动。 */
+    private var started: Boolean = false
+
+    /**
+     * 最近一次已处理的网络配置摘要（按 networkId 维度缓存）。
+     *
+     * 目的：
+     * 1. 对齐老项目 `isChanged` 语义；
+     * 2. 仅在 CONFIG_UPDATE 且配置确实变化时才触发重建隧道；
+     * 3. 避免每次心跳 CONFIG_UPDATE 都重复重建隧道。
+     */
+    private val lastConfigFingerprintByNetworkId: MutableMap<NetworkId, String> = mutableMapOf()
+
+    /** 配置摘要缓存锁，保证并发回调下读写一致。 */
+    private val configFingerprintLock: Any = Any()
+
+    /**
+     * 启动网络观察。
+     */
+    fun start() {
+        if (started) {
+            return
+        }
+        started = true
+        logChain("网络控制器已启动")
+        startObserveNetworkChanges()
+        startObserveRuntimeNetworkConfigUpdates()
+    }
+
+    /**
+     * 停止网络观察。
+     */
+    fun stop() {
+        if (!started) {
+            return
+        }
+        started = false
+        logChain("网络控制器已停止")
+        networkChangeObserver.stop()
+        runtimeContext.setNetworkConfigCallback(null)
+        clearAllConfigFingerprints()
+    }
+
+    /**
+     * 监听系统网络变化并触发策略复检。
+     */
+    private fun startObserveNetworkChanges() {
+        networkChangeObserver.start { event ->
+            logChain("检测到网络变化 原因=${event.reason}")
+            serviceScope.launch {
+                routePolicyCoordinator.triggerAutoRoutePolicyCheck(event.reason)
+            }
+        }
+    }
+
+    /**
+     * 监听 ZeroTier 内核网络配置回调并分发业务动作。
+     */
+    private fun startObserveRuntimeNetworkConfigUpdates() {
+        runtimeContext.setNetworkConfigCallback { nwid, op, config ->
+            val networkId = nwid.toNetworkIdOrNull() ?: return@setNetworkConfigCallback
+            val status = config?.status
+            val addressCount = config?.assignedAddresses?.size ?: 0
+            val routeCount = config?.routes?.size ?: 0
+            logChain("收到内核网络回调 networkId=${networkId.value} 操作=$op 状态=${status ?: "null"} 地址数=$addressCount 路由数=$routeCount")
+            serviceScope.launch {
+                dispatchAction(
+                    ServiceAction.SyncNetworkConfig(
+                        networkId = networkId,
+                        reason = "network_config_callback",
+                    ),
+                )
+
+                // 与老项目对齐：
+                // 1. OP_UP 只做同步，不触发重建；
+                // 2. 仅当 OP_CONFIG_UPDATE 且配置发生变化时才允许重建；
+                // 3. 状态不是 NETWORK_STATUS_OK 时，即使配置变化也只同步不重建。
+                val configChanged = when (op) {
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE ->
+                        markAndCheckConfigChanged(networkId, config)
+
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_DOWN,
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_DESTROY,
+                    -> {
+                        clearConfigFingerprint(networkId)
+                        false
+                    }
+
+                    else -> false
+                }
+                val shouldReconfigure =
+                    op == VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE &&
+                        configChanged &&
+                        status == VirtualNetworkStatus.NETWORK_STATUS_OK
+                if (shouldReconfigure) {
+                    val entity = networkRepository.findById(networkId) ?: return@launch
+                    logChain("触发隧道重配置 networkId=${networkId.value} 操作=$op 配置变化=$configChanged")
+                    dispatchAction(
+                        ServiceAction.ReconfigureTunnel(
+                            networkId = networkId,
+                            routeViaZeroTier = entity.config.routeViaZeroTier,
+                            dnsMode = entity.config.dnsMode,
+                            customDnsServers = entity.dnsServers.ifEmpty {
+                                entity.config.customDns
+                                    .split('\n', ',', ';')
+                                    .map { it.trim() }
+                                    .filter { it.isNotEmpty() }
+                            },
+                            reason = "network_config_callback",
+                        ),
+                    )
+                } else {
+                    val skipReason = when {
+                        op != VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE -> "非配置更新操作"
+                        !configChanged -> "配置未变化"
+                        status != VirtualNetworkStatus.NETWORK_STATUS_OK -> "状态未就绪:${status ?: "null"}"
+                        else -> "未命中重配置条件"
+                    }
+                    logChain(
+                        "跳过隧道重配置 networkId=${networkId.value} 操作=$op 原因=$skipReason",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 更新并判断网络配置是否变化。
+     *
+     * 说明：
+     * 1. 首次收到 CONFIG_UPDATE 视为“变化”，确保能完成第一次建隧道；
+     * 2. 后续摘要一致则视为“未变化”，直接跳过重建；
+     * 3. 摘要为空（例如 config 为 null）时判定未变化，避免误触发。
+     */
+    private fun markAndCheckConfigChanged(networkId: NetworkId, config: VirtualNetworkConfig?): Boolean {
+        val newFingerprint = config?.buildConfigFingerprint() ?: return false
+        return synchronized(configFingerprintLock) {
+            val oldFingerprint = lastConfigFingerprintByNetworkId[networkId]
+            lastConfigFingerprintByNetworkId[networkId] = newFingerprint
+            oldFingerprint != newFingerprint
+        }
+    }
+
+    /** 清理单个网络的配置摘要缓存。 */
+    private fun clearConfigFingerprint(networkId: NetworkId) {
+        synchronized(configFingerprintLock) {
+            lastConfigFingerprintByNetworkId.remove(networkId)
+        }
+    }
+
+    /** 清理全部配置摘要缓存。 */
+    private fun clearAllConfigFingerprints() {
+        synchronized(configFingerprintLock) {
+            lastConfigFingerprintByNetworkId.clear()
+        }
+    }
+
+    private fun logChain(message: String) {
+        Log.i(TAG, "[$LOG_KEY] $message")
+    }
+
+    private companion object {
+        private const val TAG = "ServiceNetworkController"
+        private const val LOG_KEY = "ZTL_CHAIN"
+    }
+}
+
+/**
+ * 构建用于“配置变化判定”的稳定摘要字符串。
+ *
+ * 说明：
+ * 1. 只提取影响隧道行为的关键字段（状态、地址、路由、DNS、MTU 等）；
+ * 2. 对集合字段排序后再拼接，避免仅因顺序变化导致误判；
+ * 3. 摘要仅用于本地变化检测，不参与持久化与对外协议。
+ */
+private fun VirtualNetworkConfig.buildConfigFingerprint(): String {
+    val addressFingerprint = assignedAddresses.orEmpty()
+        .mapNotNull { assigned ->
+            val host = assigned.address?.hostAddress ?: return@mapNotNull null
+            "$host/${assigned.port}"
+        }
+        .sorted()
+        .joinToString(separator = "|")
+
+    val routeFingerprint = routes.orEmpty()
+        .map { route ->
+            val targetHost = route.target?.address?.hostAddress ?: "null"
+            val targetPrefix = route.target?.port ?: -1
+            val viaHost = route.via?.address?.hostAddress ?: "null"
+            "$targetHost/$targetPrefix->$viaHost"
+        }
+        .sorted()
+        .joinToString(separator = "|")
+
+    val dnsFingerprint = dns?.servers.orEmpty()
+        .mapNotNull { server -> server.address?.hostAddress }
+        .sorted()
+        .joinToString(separator = "|")
+
+    val domain = dns?.domain?.trim().orEmpty()
+
+    return buildString {
+        append("status=").append(status).append(';')
+        append("type=").append(type).append(';')
+        append("name=").append(name ?: "").append(';')
+        append("mtu=").append(mtu).append(';')
+        append("mac=").append(mac).append(';')
+        append("broadcast=").append(isBroadcastEnabled).append(';')
+        append("bridge=").append(isBridge).append(';')
+        append("addresses=").append(addressFingerprint).append(';')
+        append("routes=").append(routeFingerprint).append(';')
+        append("dnsDomain=").append(domain).append(';')
+        append("dnsServers=").append(dnsFingerprint)
+    }
+}
+
+/**
+ * 将 ZeroTier 无符号 Long 网络 ID 转换为业务 NetworkId。
+ */
+private fun Long.toNetworkIdOrNull(): NetworkId? {
+    val hex = java.lang.Long.toUnsignedString(this, 16).padStart(16, '0')
+    return NetworkId.parse(hex)
+}
