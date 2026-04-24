@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -54,6 +55,9 @@ class SettingsStore @Inject constructor(
         // --- 常规与 Planet 配置 (General / Planet) ---
         /** 是否开机自启动服务 */
         private val KEY_START_ON_BOOT = booleanPreferencesKey(SettingsKeys.START_ON_BOOT)
+        /** 最近一次已处理开机自启的 bootCount */
+        private val KEY_START_ON_BOOT_LAST_HANDLED_BOOT_COUNT =
+            intPreferencesKey(SettingsKeys.START_ON_BOOT_LAST_HANDLED_BOOT_COUNT)
         /** 是否使用自定义 Planet 文件 */
         private val KEY_PLANET_USE_CUSTOM = booleanPreferencesKey(SettingsKeys.PLANET_USE_CUSTOM)
         /** 是否自动检查 Planet 路由 */
@@ -120,6 +124,22 @@ class SettingsStore @Inject constructor(
      */
     suspend fun readStartOnBootEnabled(): Boolean {
         return readPreferencesSnapshot()[KEY_START_ON_BOOT] ?: true
+    }
+
+    /**
+     * 读取最近一次已处理开机自启的 bootCount。
+     */
+    suspend fun readLastHandledBootCount(): Int? {
+        return readPreferencesSnapshot()[KEY_START_ON_BOOT_LAST_HANDLED_BOOT_COUNT]
+    }
+
+    /**
+     * 保存最近一次已处理开机自启的 bootCount。
+     */
+    suspend fun writeLastHandledBootCount(bootCount: Int) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_START_ON_BOOT_LAST_HANDLED_BOOT_COUNT] = bootCount
+        }
     }
 
     /**

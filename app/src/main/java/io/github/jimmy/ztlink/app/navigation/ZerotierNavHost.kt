@@ -218,11 +218,17 @@ fun ZerotierNavHost(
 
         // ── 其他 Tab 页面 ─────────────────────────────────────────────
         composable(route = ZerotierTab.PEERS.route) {
-            PeersScreen(modifier = Modifier.fillMaxSize())
+            PeersScreen(
+                modifier = Modifier.fillMaxSize(),
+                externalBottomPadding = tabBottomPadding,
+            )
         }
 
         composable(route = ZerotierTab.MOONS.route) {
-            MoonsScreen(modifier = Modifier.fillMaxSize())
+            MoonsScreen(
+                modifier = Modifier.fillMaxSize(),
+                externalBottomPadding = tabBottomPadding,
+            )
         }
 
         composable(route = ZerotierTab.SETTINGS.route) {

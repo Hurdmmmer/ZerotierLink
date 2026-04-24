@@ -104,6 +104,7 @@ class ServiceActionDispatcher @Inject constructor(
                 Intent(context, ZeroTierVpnService::class.java).apply {
                     action = ZeroTierVpnService.ACTION_SYNC_NETWORK_CONFIG
                     putExtra(ZeroTierVpnService.EXTRA_NETWORK_ID, networkId.value)
+                    putExtra(ZeroTierVpnService.EXTRA_NETWORK_CONFIG_CHANGED, configChanged)
                     putExtra(ZeroTierVpnService.EXTRA_REASON, reason)
                 }
             }

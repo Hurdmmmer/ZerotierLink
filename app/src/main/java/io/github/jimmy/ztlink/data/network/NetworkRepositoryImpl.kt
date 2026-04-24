@@ -98,6 +98,11 @@ class NetworkRepositoryImpl(
         notifyDataChanged()
     }
 
+    override suspend fun clearLastActivated() = withContext(ioDispatcher) {
+        networkDao.clearLastActivated()
+        notifyDataChanged()
+    }
+
     override suspend fun findLastActivated(): NetworkEntity? = withContext(ioDispatcher) {
         val lastActivated = networkDao.listAll().firstOrNull { it.lastActivated } ?: return@withContext null
         lastActivated.toDomainEntity(

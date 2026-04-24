@@ -11,6 +11,7 @@ import androidx.core.app.NotificationManagerCompat
 import dagger.hilt.android.AndroidEntryPoint
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.data.network.NetworkRepository
+import io.github.jimmy.ztlink.data.network.local.MoonOrbitDao
 import io.github.jimmy.ztlink.data.settings.WhitelistPackagesProvider
 import io.github.jimmy.ztlink.model.network.JoinNetwork
 import io.github.jimmy.ztlink.util.enums.NetworkStatusEnum
@@ -75,6 +76,10 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /** 应用白名单包名提供器。 */
     @Inject
     lateinit var whitelistPackagesProvider: WhitelistPackagesProvider
+
+    /** Persisted moon orbit records. */
+    @Inject
+    lateinit var moonOrbitDao: MoonOrbitDao
 
     /** 启动网络环境门禁。 */
     @Inject
@@ -221,7 +226,10 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
                 is ServiceAction.Stop -> handleStop(action)
                 is ServiceAction.EnterMonitorOnly -> handleEnterMonitorOnly(action)
                 is ServiceAction.ResumeRelay -> handleResumeRelay(action)
-                is ServiceAction.SyncNetworkConfig -> handleSyncNetworkConfig(action.networkId)
+                is ServiceAction.SyncNetworkConfig -> handleSyncNetworkConfig(
+                    networkId = action.networkId,
+                    configChanged = action.configChanged,
+                )
                 is ServiceAction.ReconfigureTunnel -> handleReconfigureTunnel(action)
                 is ServiceAction.OrbitMoons -> handleOrbitMoons(action)
                 is ServiceAction.DeorbitMoons -> handleDeorbitMoons(action)
@@ -363,6 +371,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         // join 成功后立即记录最近激活网络：
         // 即使当前仍在等待控制器授权（还不能建隧道），后续 StartOrResume 也能恢复到该目标网络。
         networkRepository.setLastActivated(networkId)
+        applyPersistedMoonOrbits(networkId)
 
         // 建立 VPN 隧道，使用用户配置的路由、DNS 和白名单参数
         val tunnelResult = runtimeService.establishVpnTunnel(
@@ -414,6 +423,35 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     }
 
     /**
+     * Apply persisted moon orbits after a successful join.
+     *
+     * This keeps behavior aligned with the legacy app:
+     * all configured moons are re-applied whenever a network join succeeds.
+     */
+    private suspend fun applyPersistedMoonOrbits(networkId: NetworkId) {
+        val moonConfigs = moonOrbitDao.listAll()
+        if (moonConfigs.isEmpty()) {
+            return
+        }
+        val specs = moonConfigs.map { config ->
+            RuntimeMoonOrbit(
+                moonWorldId = config.moonWorldId,
+                moonSeed = config.moonSeed,
+            )
+        }
+        val result = runtimeService.orbitMoons(specs)
+        if (result.isRuntimeSuccess()) {
+            logChain(
+                "加入网络后自动应用 Moon 入轨 networkId=${networkId.value} 数量=${specs.size}",
+            )
+        } else {
+            logChain(
+                "加入网络后自动应用 Moon 入轨失败 networkId=${networkId.value} 数量=${specs.size} 结果=${result.resultCode}",
+            )
+        }
+    }
+
+    /**
      * 处理离开网络动作。
      */
     private suspend fun handleLeave(action: ServiceAction.Leave): ServiceActionResult {
@@ -446,6 +484,8 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         // 当最后一个网络离开后，必须立即停止 runtime（不保活），
         // 避免节点进程继续存活导致管理端长时间显示在线。
         if (noNetworksLeft) {
+            networkRepository.clearLastActivated()
+            logChain("离网后无剩余网络，已清理最近激活网络")
             logChain("离网后无剩余网络，执行 Runtime 停止")
             val stopResult = runtimeService.stopRuntime(keepServiceAlive = false)
             if (!stopResult.isRuntimeSuccess() && stopResult.resultCode != RuntimeResultCode.NOT_RUNNING) {
@@ -479,10 +519,17 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      * 处理进入监控模式。
      */
     private suspend fun handleEnterMonitorOnly(action: ServiceAction.EnterMonitorOnly): ServiceActionResult {
-        runtimeService.updateMonitorOnlyMode(true)
+        val currentState = stateStore.currentState()
+        val runtimeState = runtimeService.readRuntimeState()
         val currentNetwork = action.networkId
-            ?: stateStore.currentState().networkId
-            ?: runtimeService.readRuntimeState().activeNetworkId
+            ?: currentState.networkId
+            ?: runtimeState.activeNetworkId
+        if (currentState.type == ServiceStateType.STOPPED && currentNetwork == null) {
+            logChain("进入仅监听忽略 原因=service_stopped_no_active_network 触发原因=${action.reason}")
+            return terminalSuccess(effect = null)
+        }
+
+        runtimeService.updateMonitorOnlyMode(true)
         runtimeService.stopRuntime(keepServiceAlive = true)
 
         val state = ServiceState.monitorOnly(
@@ -612,10 +659,18 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /**
      * 处理同步网络配置动作。
      */
-    private suspend fun handleSyncNetworkConfig(networkId: NetworkId): ServiceActionResult {
-        val runtimeNetwork = runtimeService.getNetworkConfig(networkId) ?: return terminalSuccess(effect = null)
-        applyRuntimeNetworkToRepository(runtimeNetwork)
-        val effect = ServiceEffect.networkConfigChanged(networkId, changed = true)
+    private suspend fun handleSyncNetworkConfig(
+        networkId: NetworkId,
+        configChanged: Boolean,
+    ): ServiceActionResult {
+        val runtimeNetwork = runtimeService.getNetworkConfig(networkId)
+        if (runtimeNetwork != null) {
+            applyRuntimeNetworkToRepository(runtimeNetwork)
+        }
+        val effect = ServiceEffect.networkConfigChanged(
+            networkId = networkId,
+            changed = configChanged && runtimeNetwork != null,
+        )
         stateStore.emitEffect(effect)
         return terminalSuccess(effect)
     }
@@ -679,6 +734,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      */
     private suspend fun handleQueryPeers(): ServiceActionResult {
         val peers = runtimeService.listPeers()
+        logChain("查询节点 peers 完成 数量=${peers.size}")
         val effect = ServiceEffect.peerSnapshotUpdated(
             peerCount = peers.size,
             peers = peers,
@@ -997,7 +1053,8 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             is ServiceAction.Stop -> "停止服务 原因=${action.reason} 保活=${action.keepServiceAlive}"
             is ServiceAction.EnterMonitorOnly -> "进入仅监听 原因=${action.reason} networkId=${action.networkId?.value ?: "none"}"
             is ServiceAction.ResumeRelay -> "恢复转发 原因=${action.reason}"
-            is ServiceAction.SyncNetworkConfig -> "同步网络配置 原因=${action.reason} networkId=${action.networkId.value}"
+            is ServiceAction.SyncNetworkConfig ->
+                "同步网络配置 原因=${action.reason} networkId=${action.networkId.value} 配置变化=${action.configChanged}"
             is ServiceAction.ReconfigureTunnel -> "重建隧道 原因=${action.reason} networkId=${action.networkId.value}"
             is ServiceAction.OrbitMoons -> "Moon 入轨 原因=${action.reason} 数量=${action.moons.size}"
             is ServiceAction.DeorbitMoons -> "Moon 退轨 原因=${action.reason} 数量=${action.moonWorldIds.size}"
@@ -1058,6 +1115,8 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
         /** 意图传参：网络 ID。 */
         const val EXTRA_NETWORK_ID: String = "extra_network_id"
+        /** 意图传参：配置是否发生变化。 */
+        const val EXTRA_NETWORK_CONFIG_CHANGED: String = "extra_network_config_changed"
 
         /** 意图传参：是否通过 ZeroTier 路由。 */
         const val EXTRA_ROUTE_VIA_ZERO_TIER: String = "extra_route_via_zero_tier"
@@ -1181,6 +1240,7 @@ private fun Intent.toServiceAction(): ServiceAction? {
                 ?: return null
             ServiceAction.SyncNetworkConfig(
                 networkId = networkId,
+                configChanged = getBooleanExtra(ZeroTierVpnService.EXTRA_NETWORK_CONFIG_CHANGED, false),
                 reason = getStringExtra(ZeroTierVpnService.EXTRA_REASON) ?: "sync_network_config",
             )
         }

@@ -9,11 +9,13 @@ import dagger.hilt.components.SingletonComponent
 import io.github.jimmy.ztlink.data.network.local.AppNodeDao
 import io.github.jimmy.ztlink.data.network.local.AssignedAddressDao
 import io.github.jimmy.ztlink.data.network.local.DnsServerDao
+import io.github.jimmy.ztlink.data.network.local.MoonOrbitDao
 import io.github.jimmy.ztlink.data.network.local.NetworkConfigDao
 import io.github.jimmy.ztlink.data.network.local.NetworkDao
 import io.github.jimmy.ztlink.data.network.local.SqliteAppNodeDao
 import io.github.jimmy.ztlink.data.network.local.SqliteAssignedAddressDao
 import io.github.jimmy.ztlink.data.network.local.SqliteDnsServerDao
+import io.github.jimmy.ztlink.data.network.local.SqliteMoonOrbitDao
 import io.github.jimmy.ztlink.data.network.local.SqliteNetworkConfigDao
 import io.github.jimmy.ztlink.data.network.local.SqliteNetworkDao
 import io.github.jimmy.ztlink.data.network.local.ZtAppDbHelper
@@ -112,5 +114,16 @@ object DatabaseDiManage {
         dbHelper: ZtAppDbHelper,
     ): AppNodeDao {
         return SqliteAppNodeDao(dbHelper)
+    }
+
+    /**
+     * Provide moon orbit DAO.
+     */
+    @Provides
+    @Singleton
+    fun provideMoonOrbitDao(
+        dbHelper: ZtAppDbHelper,
+    ): MoonOrbitDao {
+        return SqliteMoonOrbitDao(dbHelper)
     }
 }

@@ -61,6 +61,11 @@ interface NetworkRepository {
     suspend fun setLastActivated(networkId: NetworkId)
 
     /**
+     * 清空最近激活网络标记。
+     */
+    suspend fun clearLastActivated()
+
+    /**
      * 查询最近一次激活的网络。
      *
      * @return 最近激活网络，未命中返回 null。

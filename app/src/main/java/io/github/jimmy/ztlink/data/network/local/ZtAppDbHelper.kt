@@ -28,11 +28,13 @@ class ZtAppDbHelper(
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // 当前是首版落地，迁移策略先保留占位，后续按版本追加。
         if (oldVersion < 1) {
             TABLE_CONTRACTS.forEach { contract ->
                 db.execSQL(contract.createTableSql)
             }
+        }
+        if (oldVersion < 2) {
+            db.execSQL(MoonOrbitDbEntity.createTableSql)
         }
     }
 
@@ -40,7 +42,7 @@ class ZtAppDbHelper(
         /** 数据库文件名。 */
         const val DB_NAME: String = "ztlink_app.db"
         /** 数据库版本。 */
-        const val DB_VERSION: Int = 1
+        const val DB_VERSION: Int = 2
 
         /**
          * 统一注册的表契约列表。
@@ -55,6 +57,7 @@ class ZtAppDbHelper(
             AssignedAddressDbEntity.Companion,
             DnsServerDbEntity.Companion,
             AppNodeDbEntity.Companion,
+            MoonOrbitDbEntity.Companion,
         )
     }
 }

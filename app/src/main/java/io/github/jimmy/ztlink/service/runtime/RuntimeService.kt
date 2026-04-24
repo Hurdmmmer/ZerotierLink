@@ -1023,14 +1023,21 @@ class RuntimeService @Inject constructor(
      * SDK Peer 映射为 runtime 对象。
      */
     private fun Peer.toRuntimePeer(): RuntimePeerInfo {
+        // 对齐老项目：
+        // 1) peerId 统一使用无符号十六进制地址，避免 SDK 工具方法在不同平台下格式不一致；
+        // 2) 路径优先选择 preferred path，若不存在再回退到首个可用路径。
         val versionText = if (versionMajor >= 0 && versionMinor >= 0 && versionRev >= 0) {
             "$versionMajor.$versionMinor.$versionRev"
         } else {
             null
         }
-        val endpoint = paths?.firstOrNull()?.address?.toString()
+        val preferredPath = paths.orEmpty()
+            .firstOrNull { it.isPreferred && it.address != null }
+        val fallbackPath = paths.orEmpty()
+            .firstOrNull { it.address != null }
+        val endpoint = (preferredPath ?: fallbackPath)?.address?.toString()
         return RuntimePeerInfo(
-            peerId = StringUtils.addressToString(address),
+            peerId = address.toPeerIdHex(),
             role = role.name,
             address = endpoint,
             latencyMs = latency.toLong().takeIf { it >= 0 },
@@ -1052,6 +1059,16 @@ class RuntimeService @Inject constructor(
         /** 前缀最大值。 */
         private const val MAX_PREFIX = 128
     }
+}
+
+/**
+ * 将节点地址转换为固定宽度的无符号十六进制字符串。
+ *
+ * 说明：
+ * 老项目 peers 列表使用十六进制地址展示，采用固定宽度后更便于比对与排序。
+ */
+private fun Long.toPeerIdHex(): String {
+    return java.lang.Long.toUnsignedString(this, 16).padStart(10, '0')
 }
 
 /**

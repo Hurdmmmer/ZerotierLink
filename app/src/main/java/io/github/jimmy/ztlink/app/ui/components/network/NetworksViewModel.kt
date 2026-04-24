@@ -517,8 +517,11 @@ class NetworksViewModel @Inject constructor(
                         // 这里需要及时解除 processing，避免 UI 开关长期显示“处理中”。
                         // 同理，进入/退出仅监听也属于“本次开关动作已完成”，必须解除 processing。
                         effect.networkId?.value?.let { id ->
-                            logChain("效果回调解除处理中 type=${effect.type} networkId=$id")
-                            markProcessing(id, processing = false)
+                            val shouldClearProcessing = _uiState.value.processingIds.contains(id)
+                            if (shouldClearProcessing) {
+                                logChain("效果回调解除处理中 type=${effect.type} networkId=$id")
+                                markProcessing(id, processing = false)
+                            }
                         }
                         if (effect.type == ServiceEffectType.JOIN_FAILED) {
                             activeSwitchNetworkId = null

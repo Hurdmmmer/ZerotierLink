@@ -3,6 +3,7 @@ package io.github.jimmy.ztlink.service.startup
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
 import android.util.Log
 import io.github.jimmy.ztlink.data.settings.SettingsStore
 import io.github.jimmy.ztlink.service.ServiceAction
@@ -59,6 +60,14 @@ class BootCompletedReceiver : BroadcastReceiver() {
                     Log.i(TAG, "startOnBoot disabled, skip boot autostart.")
                     return@launch
                 }
+                val bootCount = readBootCount(context.applicationContext)
+                if (bootCount != null) {
+                    val lastHandledBootCount = settingsStore.readLastHandledBootCount()
+                    if (lastHandledBootCount == bootCount) {
+                        Log.i(TAG, "Skip duplicated boot autostart. bootCount=$bootCount")
+                        return@launch
+                    }
+                }
 
                 ServiceActionDispatcher(context.applicationContext).dispatch(
                     ServiceAction.StartOrResume(
@@ -67,6 +76,9 @@ class BootCompletedReceiver : BroadcastReceiver() {
                         reason = "boot_autostart",
                     ),
                 )
+                if (bootCount != null) {
+                    settingsStore.writeLastHandledBootCount(bootCount)
+                }
                 Log.i(TAG, "Boot autostart requested. action=$action")
             } catch (t: Throwable) {
                 Log.e(TAG, "Boot autostart failed.", t)
@@ -74,5 +86,11 @@ class BootCompletedReceiver : BroadcastReceiver() {
                 pendingResult.finish()
             }
         }
+    }
+
+    private fun readBootCount(context: Context): Int? {
+        return runCatching {
+            Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT)
+        }.getOrNull()
     }
 }

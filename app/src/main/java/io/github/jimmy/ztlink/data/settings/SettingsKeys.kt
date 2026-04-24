@@ -20,6 +20,8 @@ object SettingsKeys {
 
     /** 开机启动。 */
     const val START_ON_BOOT = "general_start_zerotier_on_boot"
+    /** 最近一次已处理开机自启的 bootCount。 */
+    const val START_ON_BOOT_LAST_HANDLED_BOOT_COUNT = "general_start_on_boot_last_handled_boot_count"
     /** 是否启用自定义 planet。 */
     const val PLANET_USE_CUSTOM = "planet_use_custom"
     /** 是否启用自动路由探测。 */

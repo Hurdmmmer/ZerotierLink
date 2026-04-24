@@ -179,6 +179,26 @@ class RoutePolicyEvaluator @Inject constructor(
                 enabled = true,
             )
         }
+        val activeNetwork = connectivityManager.activeNetwork ?: return RoutePolicyDecision(
+            action = RoutePolicyAction.KEEP_RUNNING,
+            inIntranet = null,
+            detail = "no_active_network",
+            enabled = true,
+        )
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return RoutePolicyDecision(
+            action = RoutePolicyAction.KEEP_RUNNING,
+            inIntranet = null,
+            detail = "no_active_network_capabilities",
+            enabled = true,
+        )
+        if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            return RoutePolicyDecision(
+                action = RoutePolicyAction.RESUME_RELAY,
+                inIntranet = false,
+                detail = "active_network_not_wifi,reason:$reason",
+                enabled = true,
+            )
+        }
         val currentSsid = currentWifiSsid() ?: return RoutePolicyDecision(
             action = RoutePolicyAction.KEEP_RUNNING,
             inIntranet = null,
@@ -215,7 +235,11 @@ class RoutePolicyEvaluator @Inject constructor(
         }
         val raw = wifiManager.connectionInfo?.ssid ?: return null
         // Android 返回值通常带双引号，需要统一归一化。
-        return raw.trim().trim('"')
+        val normalized = raw.trim().trim('"')
+        if (normalized.isBlank() || normalized.equals("<unknown ssid>", ignoreCase = true)) {
+            return null
+        }
+        return normalized
     }
 }
 
@@ -355,6 +379,10 @@ class RoutePolicyCoordinator @Inject constructor(
             val delegate = runtimeDelegateRef.get()
             if (delegate == null) {
                 logChain("自动策略复检跳过 原因=$reason 详情=no_delegate")
+                return@withLock
+            }
+            if (!delegate.isServiceRunning()) {
+                logChain("自动策略复检跳过 原因=$reason 详情=service_not_running")
                 return@withLock
             }
             val decision = evaluator.evaluate(reason)

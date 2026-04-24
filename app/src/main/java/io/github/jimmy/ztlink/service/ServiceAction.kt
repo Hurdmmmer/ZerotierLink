@@ -73,6 +73,7 @@ sealed interface ServiceAction {
      */
     data class SyncNetworkConfig(
         val networkId: NetworkId,
+        val configChanged: Boolean = false,
         override val reason: String = "sync_network_config",
     ) : ServiceAction
 

@@ -96,18 +96,20 @@ class ServiceNetworkController(
             val routeCount = config?.routes?.size ?: 0
             logChain("收到内核网络回调 networkId=${networkId.value} 操作=$op 状态=${status ?: "null"} 地址数=$addressCount 路由数=$routeCount")
             serviceScope.launch {
-                dispatchAction(
-                    ServiceAction.SyncNetworkConfig(
-                        networkId = networkId,
-                        reason = "network_config_callback",
-                    ),
-                )
-
                 // 与老项目对齐：
                 // 1. OP_UP 只做同步，不触发重建；
                 // 2. 仅当 OP_CONFIG_UPDATE 且配置发生变化时才允许重建；
                 // 3. 状态不是 NETWORK_STATUS_OK 时，即使配置变化也只同步不重建。
                 val configChanged = when (op) {
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_UP -> {
+                        // 关键修复：
+                        // 某些场景下 OP_UP 已经携带完整 OK 配置（地址/路由均已就绪），
+                        // 若不在这里预热指纹缓存，下一条 CONFIG_UPDATE 会因 oldFingerprint=null
+                        // 被误判为“变化”，从而触发一次不必要的隧道重建。
+                        cacheConfigFingerprint(networkId, config)
+                        false
+                    }
+
                     VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE ->
                         markAndCheckConfigChanged(networkId, config)
 
@@ -117,8 +119,30 @@ class ServiceNetworkController(
                         clearConfigFingerprint(networkId)
                         false
                     }
-
-                    else -> false
+                }
+                // 同步动作派发收敛：
+                // 1) OP_UP 需要同步一次，确保首轮配置可回写；
+                // 2) OP_CONFIG_UPDATE 仅在“配置确实变化”时同步；
+                // 3) DOWN/DESTROY 不再派发，避免离网/抖动阶段产生无意义动作噪声。
+                val shouldDispatchSync = when (op) {
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_UP -> true
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE -> configChanged
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_DOWN,
+                    VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_DESTROY,
+                    -> false
+                }
+                if (shouldDispatchSync) {
+                    dispatchAction(
+                        ServiceAction.SyncNetworkConfig(
+                            networkId = networkId,
+                            configChanged = configChanged,
+                            reason = "network_config_callback",
+                        ),
+                    )
+                } else {
+                    logChain(
+                        "跳过配置同步 networkId=${networkId.value} 操作=$op 原因=无需同步或配置未变化",
+                    )
                 }
                 val shouldReconfigure =
                     op == VirtualNetworkConfigOperation.VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE &&
@@ -170,6 +194,19 @@ class ServiceNetworkController(
             val oldFingerprint = lastConfigFingerprintByNetworkId[networkId]
             lastConfigFingerprintByNetworkId[networkId] = newFingerprint
             oldFingerprint != newFingerprint
+        }
+    }
+
+    /**
+     * 仅写入当前配置摘要，不判定变化。
+     *
+     * 使用场景：
+     * - OP_UP 阶段先预热缓存，避免后续第一条 CONFIG_UPDATE 因“旧值为空”误判为变化。
+     */
+    private fun cacheConfigFingerprint(networkId: NetworkId, config: VirtualNetworkConfig?) {
+        val newFingerprint = config?.buildConfigFingerprint() ?: return
+        synchronized(configFingerprintLock) {
+            lastConfigFingerprintByNetworkId[networkId] = newFingerprint
         }
     }
 
