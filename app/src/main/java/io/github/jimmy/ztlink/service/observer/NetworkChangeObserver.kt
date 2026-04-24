@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -73,6 +74,9 @@ class NetworkChangeObserver @Inject constructor(
     /** 最近一次传输类型。 */
     private var lastTransport: NetworkTransport = NetworkTransport.UNKNOWN
 
+    /** 当前可用的非 VPN 网络能力缓存。 */
+    private val observedNetworks: MutableMap<Network, NetworkCapabilities> = ConcurrentHashMap()
+
     /**
      * 启动监听。
      *
@@ -87,25 +91,27 @@ class NetworkChangeObserver @Inject constructor(
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                updateObservedNetwork(network)
                 dispatch(listener, "network_available")
             }
 
             override fun onLost(network: Network) {
+                observedNetworks.remove(network)
                 dispatch(listener, "network_lost")
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                if (networkCapabilities.isUsableUnderlyingNetwork()) {
+                    observedNetworks[network] = networkCapabilities
+                } else {
+                    observedNetworks.remove(network)
+                }
                 dispatch(listener, "network_capabilities_changed")
             }
         }
         networkCallback = callback
         lastTransport = resolveTransport()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            connectivityManager.registerDefaultNetworkCallback(callback)
-        } else {
-            val request = NetworkRequest.Builder().build()
-            connectivityManager.registerNetworkCallback(request, callback)
-        }
+        connectivityManager.registerNetworkCallback(buildUnderlyingNetworkRequest(), callback)
     }
 
     /**
@@ -118,6 +124,7 @@ class NetworkChangeObserver @Inject constructor(
         }
         networkCallback = null
         lastTransport = NetworkTransport.UNKNOWN
+        observedNetworks.clear()
     }
 
     /**
@@ -153,22 +160,74 @@ class NetworkChangeObserver @Inject constructor(
      * @return 当前传输类型。
      */
     private fun resolveTransport(): NetworkTransport {
-        val activeNetwork = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            connectivityManager.activeNetwork
-        } else {
-            null
-        } ?: return NetworkTransport.NONE
-
-        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+        val capabilities = observedNetworks.values
+            .minByOrNull { it.transportPriority() }
+            ?: resolveActiveUnderlyingNetworkCapabilities()
             ?: return NetworkTransport.NONE
 
         return when {
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkTransport.WIFI
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkTransport.CELLULAR
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkTransport.ETHERNET
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> NetworkTransport.VPN
             else -> NetworkTransport.UNKNOWN
         }
     }
+
+    /**
+     * 构建非 VPN 底层网络请求。
+     *
+     * 说明：
+     * - VPN 建立后默认网络可能变成 VPN 本身；
+     * - 这里主动过滤 VPN，只让路由策略看到真实 Wi-Fi/蜂窝/以太网变化。
+     */
+    private fun buildUnderlyingNetworkRequest(): NetworkRequest {
+        return NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    addCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)
+                }
+            }
+            .build()
+    }
+
+    /** 刷新指定网络的缓存能力。 */
+    private fun updateObservedNetwork(network: Network) {
+        val capabilities = connectivityManager.getNetworkCapabilities(network)
+        if (capabilities?.isUsableUnderlyingNetwork() == true) {
+            observedNetworks[network] = capabilities
+        } else {
+            observedNetworks.remove(network)
+        }
+    }
+
+    /** 回退读取当前默认网络，但排除 VPN。 */
+    private fun resolveActiveUnderlyingNetworkCapabilities(): NetworkCapabilities? {
+        val activeNetwork = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            connectivityManager.activeNetwork
+        } else {
+            null
+        } ?: return null
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return null
+        return capabilities.takeIf { it.isUsableUnderlyingNetwork() }
+    }
 }
 
+/** 判断该网络是否适合作为 VPN 底层网络。 */
+private fun NetworkCapabilities.isUsableUnderlyingNetwork(): Boolean {
+    return hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        !hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+}
+
+/** 网络优先级：Wi-Fi/以太网优先，其次蜂窝，其他网络靠后。 */
+private fun NetworkCapabilities.transportPriority(): Int {
+    return when {
+        hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 0
+        hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 1
+        hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 2
+        else -> 10
+    }
+}

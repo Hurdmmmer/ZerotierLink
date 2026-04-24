@@ -6,6 +6,7 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import dagger.hilt.android.AndroidEntryPoint
@@ -110,6 +111,11 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /** 观察管线：统一编排状态/流量/网络观察控制器。 */
     private lateinit var observerPipeline: ServiceRuntimeObserverPipeline
 
+    /** 系统电源管理器，用于判断屏幕交互状态。 */
+    private val powerManager: PowerManager by lazy {
+        getSystemService(PowerManager::class.java)
+    }
+
     /** 标记前台通知是否已启动。 */
     @Volatile
     private var foregroundStarted: Boolean = false
@@ -129,7 +135,8 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         val action = intent?.toServiceAction()
         if (action == null) {
             logChain("忽略服务命令 原因=intent_action_unresolved startId=$startId")
-            return START_STICKY
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
         logChain("收到服务命令 startId=$startId 动作=${actionSummary(action)}")
         serviceScope.launch {
@@ -507,6 +514,9 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             ServiceState.connected(activeNetworkAfterLeave, System.currentTimeMillis())
         }
         stateStore.setState(nextState)
+        if (nextState.type == ServiceStateType.STOPPED) {
+            stopSelf()
+        }
 
         return ServiceActionResult(
             accepted = true,
@@ -653,6 +663,9 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             return terminalFailure(error)
         }
         stateStore.setState(ServiceState.stopped())
+        if (!action.keepServiceAlive) {
+            stopSelf()
+        }
         return terminalSuccess(effect = null)
     }
 
@@ -938,6 +951,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             txBytesProvider = { runtimeContext.txBytes() },
             rxBytesProvider = { runtimeContext.rxBytes() },
             isForegroundStarted = { foregroundStarted },
+            isScreenInteractive = { powerManager.isInteractive },
         )
         val networkController = ServiceNetworkController(
             serviceScope = serviceScope,

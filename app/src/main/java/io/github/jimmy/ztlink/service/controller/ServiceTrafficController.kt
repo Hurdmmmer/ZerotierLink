@@ -27,6 +27,7 @@ class ServiceTrafficController(
     private val txBytesProvider: () -> Long,
     private val rxBytesProvider: () -> Long,
     private val isForegroundStarted: () -> Boolean,
+    private val isScreenInteractive: () -> Boolean,
 ) {
 
     /** 流量观察任务。 */
@@ -56,6 +57,10 @@ class ServiceTrafficController(
                         delay(BACKGROUND_REFRESH_DELAY_MS)
                         continue
                     }
+                    if (!isScreenInteractive()) {
+                        delay(SCREEN_OFF_REFRESH_DELAY_MS)
+                        continue
+                    }
                     val changed = notificationController.refreshTrafficIfNeeded(
                         nowMs = System.currentTimeMillis(),
                         statsProvider = trafficStatsProvider,
@@ -83,7 +88,9 @@ class ServiceTrafficController(
 
         /** 前台未启动时的保守等待间隔。 */
         private const val BACKGROUND_REFRESH_DELAY_MS: Long = 10_000L
+
+        /** 灭屏后不刷新可视流量通知，降低后台唤醒。 */
+        private const val SCREEN_OFF_REFRESH_DELAY_MS: Long = 60_000L
     }
 }
-
 

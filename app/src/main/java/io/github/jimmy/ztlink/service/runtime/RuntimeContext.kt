@@ -713,13 +713,6 @@ class RuntimeContext @Inject constructor(
                     if (latest != null && latest !== currentInput) {
                         return latest
                     }
-                    // 输入流对象未切换：
-                    // 某些设备上 read() 可能出现短暂异常（并不意味着 FD 已失效）。
-                    // 这里使用短超时等待，超时后允许继续复用当前输入流重试，避免永久卡死。
-                    if (latest != null) {
-                        tunInputWakeCondition.await(TUN_INPUT_RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
-                        return tunInputRef.get()
-                    }
                     tunInputWakeCondition.await()
                 }
             }
@@ -759,9 +752,6 @@ class RuntimeContext @Inject constructor(
 
         /** 异常重试等待时长。 */
         private const val ERROR_RETRY_DELAY_MS = 500L
-
-        /** TUN 输入流重试等待时长。 */
-        private const val TUN_INPUT_RETRY_DELAY_MS = 30L
 
         /** 以太类型：ARP。 */
         private const val ETHER_TYPE_ARP = 0x0806
