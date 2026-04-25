@@ -10,7 +10,10 @@ import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
 import io.github.jimmy.ztlink.service.policy.RoutePolicyCoordinator
 import io.github.jimmy.ztlink.service.runtime.RuntimeContext
 import io.github.jimmy.ztlink.service.ServiceAction
+import io.github.jimmy.ztlink.service.observer.NetworkTransport
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -46,6 +49,9 @@ class ServiceNetworkController(
     /** 配置摘要缓存锁，保证并发回调下读写一致。 */
     private val configFingerprintLock: Any = Any()
 
+    /** Wi-Fi 切回后 SSID 可能短暂不可读，保留一个复检任务等待系统补齐。 */
+    private var wifiSsidRetryJob: Job? = null
+
     /**
      * 启动网络观察。
      */
@@ -68,6 +74,8 @@ class ServiceNetworkController(
         }
         started = false
         logChain("网络控制器已停止")
+        wifiSsidRetryJob?.cancel()
+        wifiSsidRetryJob = null
         networkChangeObserver.stop()
         runtimeContext.setNetworkConfigCallback(null)
         clearAllConfigFingerprints()
@@ -78,9 +86,34 @@ class ServiceNetworkController(
      */
     private fun startObserveNetworkChanges() {
         networkChangeObserver.start { event ->
-            logChain("检测到网络变化 原因=${event.reason}")
+            logChain("检测到网络变化 原因=${event.reason} from=${event.from} to=${event.to}")
             serviceScope.launch {
-                routePolicyCoordinator.triggerAutoRoutePolicyCheck(event.reason)
+                routePolicyCoordinator.triggerAutoRoutePolicyCheck(
+                    reason = event.reason,
+                    observedTransport = event.to,
+                    observedWifiSsid = event.wifiSsid,
+                )
+            }
+            if (event.to == NetworkTransport.WIFI) {
+                scheduleWifiSsidSettleRechecks(event.reason)
+            } else {
+                wifiSsidRetryJob?.cancel()
+                wifiSsidRetryJob = null
+            }
+        }
+    }
+
+    private fun scheduleWifiSsidSettleRechecks(reason: String) {
+        wifiSsidRetryJob?.cancel()
+        wifiSsidRetryJob = serviceScope.launch {
+            WIFI_SSID_SETTLE_RECHECK_DELAYS_MS.forEachIndexed { index, delayMs ->
+                delay(delayMs)
+                logChain("Wi-Fi SSID 稳定复检 原因=$reason 序号=${index + 1} 延迟Ms=$delayMs")
+                routePolicyCoordinator.triggerAutoRoutePolicyCheck(
+                    reason = "${reason}_wifi_ssid_retry_${index + 1}",
+                    observedTransport = NetworkTransport.WIFI,
+                    observedWifiSsid = networkChangeObserver.currentWifiSsid(),
+                )
             }
         }
     }
@@ -231,6 +264,7 @@ class ServiceNetworkController(
     private companion object {
         private const val TAG = "ServiceNetworkController"
         private const val LOG_KEY = "ZTL_CHAIN"
+        private val WIFI_SSID_SETTLE_RECHECK_DELAYS_MS = longArrayOf(1_000L, 3_000L, 6_000L)
     }
 }
 

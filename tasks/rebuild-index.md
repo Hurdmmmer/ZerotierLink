@@ -80,7 +80,7 @@
 - [ ] 通知与 UI 状态一致性校验
 
 ### 4.5 业务页面能力
-- [ ] Peers 页面接入真实数据
+- [x] Peers 页面接入真实数据
 - [ ] Moons 页面接入真实数据
 
 ## 5. 加入网络（Join）专项清单（第一优先级）
@@ -177,6 +177,120 @@
     - 停止阶段资源回收（线程中断、bridge 回收、VPN IO 回收、Node 关闭）
   - Hilt 绑定已补齐：
     - `KernelModule.provideNodeKernelCore -> NodeKernelCoreImpl`
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.47 SSID 底层网络判定与无目标启动通知修复（2026-04-25）
+- 已完成：
+  - 修复网络切换后 SSID 内外网判断错误：
+    - 根因：`RoutePolicyEvaluator` 使用 `ConnectivityManager.activeNetwork` 作为判断源，VPN 建立后该默认网络可能变成 VPN 自身，导致把真实 Wi-Fi 误判为非 Wi-Fi 或无法读取 SSID。
+    - 处理：策略评估改为解析真实底层网络能力，优先使用非 VPN 的 active network，必要时遍历 `allNetworks` 并过滤 `NET_CAPABILITY_NOT_VPN / INTERNET`，按 Wi-Fi / Ethernet / Cellular 优先级选择。
+    - 结果：VPN 前台服务存在时，SSID 策略不再被 VPN 自身网络能力干扰，内网进入 `MONITOR_ONLY`、外网/蜂窝恢复内核的判断源与 `NetworkChangeObserver` 保持一致。
+  - 修复通知栏存在但网络卡片开关关闭的假状态入口：
+    - 根因：`StartOrResume` 先发 `STARTING` 状态再判断是否存在目标网络；当没有最近激活网络时，前台通知可能被短暂拉起，但 UI 没有对应运行网络。
+    - 处理：先解析目标网络，确认存在后才进入 `STARTING`；无目标时直接保持 `STOPPED` 并记录日志。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.48 自动切到蜂窝后恢复内核修复（2026-04-25）
+- 已完成：
+  - 修复日志复现场景：
+    - `ServiceNetworkController` 已识别 `wifi_to_cellular`；
+    - 但 `RoutePolicyEvaluator` 重新读取系统网络能力时仍可能命中短暂残留的 Wi-Fi capability；
+    - 随后 SSID 读取失败，返回 `current_wifi_unknown + KEEP_RUNNING`，导致 `MONITOR_ONLY` 下没有执行 `ResumeRelay`。
+  - 处理：
+    - `NetworkChangeObserver` 的 `event.to` 传入 `RoutePolicyCoordinator`；
+    - `RoutePolicyEvaluator.evaluate(...)` 接收 `observedTransport`；
+    - 当观察到 `CELLULAR` 或 `ETHERNET` 时，直接判定为已离开内网并返回 `RESUME_RELAY`，不再二次读取 SSID。
+  - 观测增强：
+    - 网络变化日志增加 `from/to`，便于真机日志直接确认切网方向。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.49 点击开启网络后立即启动前台通知（2026-04-25）
+- 已完成：
+  - 修复通知展示入口语义：
+    - 原链路等服务状态进入 `MONITOR_ONLY / CONNECTING / CONNECTED` 后，由 `ServiceStateController` 启动前台通知；
+    - 现改为 `ZeroTierVpnService.onStartCommand` 收到 `Join` 命令后立即绑定连接中通知并调用 `startForeground`；
+    - 后续真实状态仍由 `ServiceStateController` 覆盖通知内容。
+  - 提升系统展示优先级：
+    - `ServiceNotificationController` 的基础通知 Builder 增加 `NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE`，请求系统尽快显示前台服务通知。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.50 Peers/Moons 统计格底色统一与老项目图标迁移（2026-04-25）
+- 已完成：
+  - 统一 Peers 与 Moons 顶部统计小卡片底色：
+    - 统计格子统一使用 `surfaceContainerHighest` 半透明背景；
+    - 各指标颜色只用于边框与数值强调，避免多色背景造成页面不一致。
+  - 抽取统计小卡片公共组件：
+    - 新增 `common/SummaryMetricCell.kt`；
+    - Peers 与 Moons 删除各自本地重复实现，统一引用公共组件，后续样式调整只需改一处。
+  - 启动图标恢复为老项目原图标：
+    - `ztlink_launcher*` 资源复制自 `D:\IdeaProject\ZerotierFix` 的原始 launcher 图标；
+    - adaptive icon 结构保持背景色独立、前景图层独立，Manifest 继续指向 `@mipmap/ztlink_launcher`。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.51 开机自启前台服务启动链路修复（2026-04-25）
+- 诊断结论：
+  - Manifest 已注册 `BootCompletedReceiver`，并声明 `RECEIVE_BOOT_COMPLETED`，不是“没有注册系统广播”。
+  - 开机广播派发的是 `StartOrResume`，该动作走 `startForegroundService()`，但服务入口没有立即调用 `startForeground()`。
+  - Android 要求前台服务启动后尽快进入前台；该竞态会导致开机自启被系统终止，看起来像广播未生效。
+- 已完成：
+  - `StartOrResume` 收到命令后立即绑定连接中通知并调用 `startForeground()`；
+  - `StartOrResume` 若没有可恢复网络，主动退出前台通知并 `stopSelf()`，避免空前台服务残留。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.52 Wi-Fi 自动切回时 SSID 延迟可读修复（2026-04-25）
+- 诊断结论：
+  - 真机日志显示 `cellular_to_wifi from=CELLULAR to=WIFI` 已收到，说明网络观察没有漏回调。
+  - 策略随后返回 `current_wifi_unknown + KEEP_RUNNING`，导致没有进入仅监听；根因是系统自动切回 Wi-Fi 时 SSID 可能比网络能力更晚可读。
+- 已完成：
+  - SSID 读取优先使用当前 Wi-Fi `NetworkCapabilities.transportInfo` 中的 `WifiInfo.ssid`，再回退到 `WifiManager.connectionInfo`。
+  - `ServiceNetworkController` 在观察到 `to=WIFI` 后增加 1s、3s、6s 的 SSID 稳定复检。
+  - `RoutePolicyCoordinator` 对已处于 `MONITOR_ONLY` 的场景增加幂等保护，避免延迟复检重复停内核。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.53 Android 12+ 网络回调 SSID 脱敏修复（2026-04-25）
+- 诊断结论：
+  - 真机日志显示 1s、3s、6s 的 Wi-Fi SSID 稳定复检均执行，但策略仍返回 `current_wifi_unknown`。
+  - 根因不是等待时间不足，而是 Android 12+ 默认 `ConnectivityManager.NetworkCallback()` 会对 `NetworkCapabilities.transportInfo` 中的 `WifiInfo.ssid` 做位置信息脱敏。
+  - 因此即使网络已是 Wi-Fi，策略评估仍只能拿到 `<unknown ssid>`，无法命中内网 SSID 并关闭内核。
+- 已完成：
+  - `NetworkChangeObserver` 在 Android 12+ 使用 `ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO` 注册网络回调。
+  - 网络变化事件新增 `wifiSsid` 字段，直接把回调中携带的 SSID 传给路由策略。
+  - Wi-Fi 延迟复检改为读取观察器缓存的最近 SSID，避免复检时再次依赖被脱敏的同步读取。
+  - 启动阶段 `checkStartPolicy` 改为与自动复检共用同一观察器快照（`observedTransport + observedWifiSsid`），避免“启动判断”和“运行时判断”走不同数据源。
+  - 策略日志增加观察 SSID，后续真机日志可直接确认回调是否拿到 SSID。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.54 运行时 SSID 从快照改为实时读取（2026-04-25）
+- 诊断结论：
+  - 用户侧诉求明确：SSID 判断应为“先判当前传输是 Wi-Fi，再实时读取当前连接 SSID”，不应依赖历史快照。
+  - 先前实现里 `currentWifiSsid()` 优先来源是观察器缓存能力，存在“回调滞后即数据滞后”的风险。
+- 已完成：
+  - `NetworkChangeObserver.currentWifiSsid()` 调整为实时查询优先：
+    - 先实时读取当前底层网络能力（active + allNetworks）并取 Wi-Fi transportInfo SSID；
+    - 最后回退到 `WifiManager.connectionInfo`；
+    - 明确移除“观察器缓存能力”兜底路径，避免陈旧 SSID 参与策略判断。
+  - 自动策略复检入口在 `observedTransport == WIFI` 时强制实时再次读取 `currentWifiSsid()`，覆盖外部传入值。
+  - 启动策略与自动复检继续共用同一运行时读取链路，保证判定行为一致。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.55 移除手动保护窗口并收敛为单启动闸门（2026-04-25）
+- 诊断结论：
+  - 真实日志已证明 SSID 可读且命中内网，但被 `manual_protection_window` 拦截，导致“内网打开开关仍会启动内核”。
+  - 该窗口逻辑与“runtime 启动前单闸门”架构冲突。
+- 已完成：
+  - 完整移除 `manual_protection_window` 相关状态、常量和分支。
+  - `checkStartPolicy` 改为仅按实时网络状态判断，不再使用 `observedTransport`，避免启动瞬间事件抖动误判。
+  - `StartOrResume` 链路删除手动保护窗口设置逻辑。
+  - 自动策略在进入仅监听前仅保留幂等判断（已是 `MONITOR_ONLY` 时跳过）。
 - 验证结果：
   - `:app:compileDebugKotlin` 通过。
 
@@ -442,7 +556,7 @@
 ## 11. 下一步执行（先内核，固定顺序）
 1. 把 UI 网络列表状态改为订阅服务状态流（替换当前本地假状态刷新）。
 2. 补充 VPN 权限拒绝/撤销场景的 UI 提示与重试路径。
-3. 接入 Peers/Moons 页面真实数据（走 `RuntimeFacade` 查询链路）。
+3. 接入 Moons 页面真实数据（走 `RuntimeFacade` 查询链路）。
 4. 完成真机回归：Join/Leave、切网恢复、白名单绕过、监控模式切换。
 5. 回填稳定性门禁并补自动化验证脚本。
 
@@ -618,5 +732,278 @@
     - `NetworksViewModel.applyEntitiesToUiState()` 中将 `LAN` 可见条件收敛为：
       - `isConnected && entity.isLanNetwork()`
     - 列表项与详情项均复用该条件，保证状态一致。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.31 Peers 页面真实数据接入与卡片风格统一（2026-04-23）
+- 已完成：
+  - 新增 `PeersViewModel`：
+    - 订阅 `ServiceStateStore.state/effects`。
+    - 消费 `ServiceEffect.PEER_SNAPSHOT_UPDATED` 并映射为 `PeerListItem`。
+    - 支持自动查询（进入 `CONNECTED/MONITOR_ONLY`）与手动刷新（`QueryPeers`）。
+  - 新增 `PeersUiStatus` 模型：
+    - `PeerRoleType` / `PeerPathType` / `PeerListItem` / `PeerSummary`。
+    - 支持 `direct/relay/planet/moon/leaf` 计数聚合与 Root Server IP 提取。
+  - 重构 `PeersScreen`：
+    - 使用 `Scaffold + AppTopBar + BouncyOverScroll + LazyColumn`。
+    - 接入 `ObserveUiEvents` 与刷新动作。
+    - 空态区分“未连接网络”和“已连接但暂无 peers”。
+  - 新增 `PeerCard`，视觉层级对齐网络卡片：
+    - 结构：`状态行 -> 元信息行 -> 路径行`。
+    - 复用公共组件：`Pill`、`ItemDivider`。
+    - 语义色区分 `direct/relay/root`。
+  - 文案资源补齐（`values/strings.xml`）：
+    - `peers_*`、`peers_card_*` 系列键。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.32 Peers 数量异常与中英文本地化修复（2026-04-23）
+- 已完成：
+  - 修复 Peers 可能“只显示 1 条”的核心风险点：
+    - `RuntimeService.toRuntimePeer()` 改为“首选路径优先（preferred path）”，与老项目行为一致。
+    - `peerId` 统一改为固定宽度无符号十六进制（`Long.toUnsignedString(...).padStart(10)`），避免不同格式导致列表 key 不稳定。
+    - `PeersScreen` 列表改为 `itemsIndexed` + 含索引兜底 key，避免重复 key 造成条目复用错位/丢失。
+    - 新增页面前台补刷机制：每次进入 Peers 页面触发“立即刷新 + 两次短间隔补刷”，降低连接初期快照不完整导致的长期显示偏少问题。
+  - 对齐老项目展示语义：
+    - 继续保留地址/角色/版本/延迟/路径信息结构，路径来源改为 preferred path 优先。
+  - 补齐中英文文案：
+    - `values-zh-rCN/strings.xml` 新增全量 `peers_*` 与 `peers_card_*`。
+    - `values/strings.xml` 更新 `screen_peers_subtitle` 为真实语义文案。
+  - 注释补齐：
+    - `PeersViewModel`、`PeersScreen`、`PeersUiStatus`、`RuntimeService` 关键逻辑新增中文注释，解释“为什么这样做”。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.33 Peers 查询风暴与网络配置变更语义修复（2026-04-23）
+- 已完成：
+  - `PeersViewModel` 查询节流与去重：
+    - 新增前台进入防抖（同网络短时间重复 `ON_START` 不重复拉取）。
+    - 非用户触发查询增加最小时间间隔，避免密集重复 `QueryPeers`。
+    - 查询进行中禁止再次发起，避免并发 Query 叠加。
+    - `screen started` 补刷改为“仅在 peers<=1 时触发”，且补刷过程中一旦 peers>1 或网络切换即提前停止。
+  - `SyncNetworkConfig` 变更语义修复：
+    - `ServiceAction.SyncNetworkConfig` 增加 `configChanged` 字段，并通过 Intent 透传到 `ZeroTierVpnService`。
+    - `ZeroTierVpnService.handleSyncNetworkConfig(...)` 发射 `NETWORK_CONFIG_CHANGED` 时使用真实 `configChanged`（且要求 runtime 配置可读），不再固定 `changed=true`。
+  - `ServiceNetworkController` 收敛：
+    - 先计算 `configChanged`，再派发 `SyncNetworkConfig(configChanged=...)`。
+    - 对 `VIRTUAL_NETWORK_CONFIG_OPERATION_DESTROY` 不再派发 `SyncNetworkConfig`，避免离网收尾阶段的无效同步日志噪声。
+  - 观测日志增强：
+    - `ZeroTierVpnService.handleQueryPeers()` 新增 peers 数量日志，便于定位“只显示 1 个”是否来自 runtime 快照本身。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.34 Peers 列表末项被底栏遮挡修复（2026-04-23）
+- 已完成：
+  - 修复场景：Peers 页面滚动到列表底部时，最后一个 Leaf 卡片可能被底部 Tab 栏遮挡，无法完整显示。
+  - 根因：
+    - Peers 页面未消费外层主壳 `Scaffold` 的底栏占位（`tabBottomPadding`），仅使用了页面内 `Scaffold` 的 `innerPadding`。
+  - 处理：
+    - `PeersScreen` 新增 `externalBottomPadding` 参数。
+    - `LazyColumn` 的底部 `contentPadding` 叠加 `externalBottomPadding`，确保底栏上方保留可见滚动空间。
+    - `ZerotierNavHost` 在 `Peers` Tab 路由中传入 `tabBottomPadding`。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.35 首次 CONFIG_UPDATE 误触发重建修复（2026-04-23）
+- 已完成：
+  - 修复场景：
+    - 某些会话中 `VIRTUAL_NETWORK_CONFIG_OPERATION_UP` 已是完整 `OK` 配置，
+      但随后第一条 `CONFIG_UPDATE` 仍被判定为“变化”，导致一次不必要隧道重建。
+  - 根因：
+    - 配置指纹缓存此前仅在 `CONFIG_UPDATE` 时初始化；当首条 `CONFIG_UPDATE` 到来时旧值为空，天然判定为变化。
+  - 处理：
+    - 在 `ServiceNetworkController` 的 `OP_UP` 分支预热指纹缓存（仅写入，不判定变化）。
+    - 保持 `OP_UP` 仍可同步配置，但避免后续“同内容首条 UPDATE”误判。
+  - 额外清理：
+    - 移除 `when(op)` 中冗余分支，消除该文件相关编译警告噪声。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.36 Peers 底部可见性兜底增强（2026-04-23）
+- 已完成：
+  - 修复场景：
+    - 在存在顶部 `peer summary` 卡片与底部 Tab 栏叠加时，部分设备上最后一个 Leaf 卡片仍可能“滚不全”。
+  - 处理：
+    - `PeersScreen` 改为显式尾部占位项：
+      - 计算 `listBottomSpacerHeight = externalBottomPadding + innerPaddingBottom + space24`；
+      - 在 `LazyColumn` 末尾追加 `peer-list-bottom-spacer`。
+    - 同时将 `LazyColumn` 的 `contentPadding.bottom` 收敛为基础小间距，避免仅依赖 padding 在某些布局组合下失效。
+  - 结果：
+    - 最后一项可见空间由“隐式 padding”改为“显式可滚动占位”，底部遮挡风险显著降低。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.37 Peers 卡片紧凑化重排（2026-04-23）
+- 已完成：
+  - 设计目标：
+    - 解决“卡片高度偏大、信息量偏少”的视觉密度问题，在不丢字段前提下提升扫读效率。
+  - `PeerCard` 重构：
+    - 从三段大区块（标题/双列元信息/路径）改为紧凑三行：
+      - 第一行：`status dot + peerId + role pill`
+      - 第二行：`path pill + latency chip + version chip`
+      - 第三行：`endpoint 单行`
+    - 删除两条 `ItemDivider` 与竖向分栏，减少冗余留白。
+    - 卡片内边距从 `14x14` 收敛到 `12x10`，纵向间距从 `12` 收敛到 `8`。
+    - 新增 `CompactInfoPill`，统一 latency/version 的轻量信息胶囊样式。
+  - 结果：
+    - 单卡高度明显下降，列表同屏可见条目增加；
+    - 关键信息（角色/路径/延迟/版本/端点）完整保留，阅读路径更短。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.38 Peers 左右平衡布局优化（2026-04-23）
+- 已完成：
+  - `PeerSummaryCard` 从“左对齐 pills”改为“左右平衡统计面板”：
+    - 顶部：标题 + 总数 badge。
+    - 中部：`NETWORK` 左侧标签 + 右侧 networkId 右对齐。
+    - 底部：两行三列等宽统计格（Direct / Relay / Planet / Moon / Leaf / Total），解决视觉重心偏左问题。
+  - `PeerCard` 从“信息都堆在左侧”改为“左主信息 + 右指标”：
+    - 第二行：左侧 `Path`，右侧 `Latency`。
+    - 第三行：左侧 `Endpoint`，右侧 `Version`。
+    - 保持紧凑高度的同时，卡片信息分布更均衡，扫读路径更清晰。
+  - 文案补齐：
+    - `values/strings.xml`、`values-zh-rCN/strings.xml` 新增
+      - `peers_summary_count_badge`
+      - `peers_summary_total_short`
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.39 Peers Summary 数量 Badge 轻量化（2026-04-23）
+- 已完成：
+  - 修复场景：
+    - `PeerSummary` 右上角总数 badge 视觉占位偏大，抢占标题层级。
+  - 处理：
+    - 文案由“数字+单位”改为纯数字（减少横向占位）。
+    - badge 内边距从 `8x3` 收敛到 `6x1`。
+    - 边框从 `0.5dp` 收敛到 `0.4dp`，边框/底色透明度同步下调。
+    - 文本样式下调到 `10sp + Medium`，降低视觉权重。
+  - 结果：
+    - badge 更像“辅助计数”，不会压过标题与统计网格。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.40 Peers SummaryMetricCell 高度紧凑化（2026-04-23）
+- 已完成：
+  - 修复场景：
+    - `PeerSummary` 统计网格中的 `SummaryMetricCell` 纵向占位仍偏大，导致 Summary 区块视觉重量过高。
+  - 处理：
+    - `SummaryMetricCell` 从“上下两行（数字+标签）”改为“同一行（数字+标签）”。
+    - 内边距由 `6x4` 收敛为 `6x3`，进一步压缩高度。
+    - 数字样式由 `titleSmall 13sp` 下调为 `labelLarge 12sp`。
+    - 标签样式由 `10sp` 下调为 `9sp`，并保持单行省略。
+  - 结果：
+    - 指标格高度明显降低，Summary 卡片更轻更紧凑，同时保留直连/中继/角色统计信息完整性。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.41 Peers Summary 视觉回调（2026-04-23）
+- 已完成：
+  - 右上角计数 badge 还原：
+    - 文案从纯数字恢复为“数字 + peers/节点”。
+    - 胶囊内边距、边框和字号恢复到更醒目的层级。
+  - `SummaryMetricCell` 密度回调：
+    - 从“单行极小”改回“上下两行中等密度”。
+    - 提升可读性并保持网格节奏，避免摘要卡片显得过轻。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.42 Moons 功能按老项目补全（2026-04-23）
+- 已完成：
+  - 数据层接入：
+    - 新增 `moon_orbits` 表与 DAO：
+      - `MoonOrbitDbEntity`
+      - `MoonOrbitDao`
+      - `SqliteMoonOrbitDao`
+    - `ZtAppDbHelper` 数据库版本升级到 `2`，补充 `oldVersion < 2` 的建表迁移。
+    - `DatabaseDiManage` 注入 `MoonOrbitDao`。
+  - 服务链路补全：
+    - `ZeroTierVpnService` 注入 `MoonOrbitDao`。
+    - `handleJoin` 成功后自动读取已保存 Moon 并执行 `orbit`，对齐老项目“Join 后自动应用 Moon”行为。
+  - 页面与交互补全：
+    - `MoonsScreen` 从占位页改为完整业务页：
+      - 顶栏：刷新 + 新增入口。
+      - 摘要卡：总数、来源（File/Orbit）、缓存状态（Cached/Wait）。
+      - 列表卡：World ID、Seed、来源、缓存状态。
+    - 新增 `MoonsViewModel`：
+      - 列表加载与摘要聚合。
+      - 手动 Orbit 入轨（World ID + Seed）。
+      - 文件导入入轨（校验 moon 文件头 `0x7f`，提取 World ID，写入 `moons.d/%016x.moon`）。
+      - 复制 World ID、删除入轨、删除缓存。
+      - 已连接场景下新增后立即派发 `OrbitMoons`；未连接则仅持久化，等待后续 Join 自动应用。
+    - 新增 `MoonCard` 与 `MoonsUiStatus`，复用公共组件（`AppTopBar` / `BouncyOverScroll` / `Pill` / `ItemDivider`）。
+    - `ZerotierNavHost` 的 `MoonsScreen` 接入 `tabBottomPadding`，避免末项遮挡。
+  - 文案补齐：
+    - `values/strings.xml`
+    - `values-zh-rCN/strings.xml`
+    - 补全 moons 页面、动作、校验、导入、菜单与提示文案。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.43 监控态开关恢复与自动切网恢复修复（2026-04-24）
+- 已完成：
+  - 修复“手动关闭后重进仍默认开启”：
+    - 根因：手动 `Leave` 后未清理 `lastActivated`，后续 `StartOrResume`（如开机自启链路）仍会回选该网络。
+    - 处理：新增 `NetworkRepository.clearLastActivated()`，在 `ZeroTierVpnService.handleLeave` 的 `noNetworksLeft=true` 分支中清理最近激活网络。
+  - 修复“WiFi -> 蜂窝未自动恢复内核”：
+    - 根因：策略评估器把“当前非 WiFi 网络”归类为 `current_wifi_unknown + KEEP_RUNNING`，监控态下不会触发 `ResumeRelay`。
+    - 处理：`RoutePolicyEvaluator` 新增非 WiFi 活跃网络判定，返回 `RESUME_RELAY`（`inIntranet=false`），从监控态切回转发。
+  - 修复“离网后被网络回调误拉入监控态”：
+    - 处理 1：`RoutePolicyCoordinator` 在自动复检前增加 `service_not_running` 短路。
+    - 处理 2：`ZeroTierVpnService.handleEnterMonitorOnly` 增加保护：服务已 `STOPPED` 且无活动网络时忽略该动作，避免竞态回流。
+  - 稳定性增强：
+    - SSID 读取归一化时过滤空值和 `<unknown ssid>`，避免误判触发策略切换。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.44 开机自启重复触发去重（2026-04-24）
+- 已完成：
+  - 修复场景：
+    - 调试阶段（Android Studio 反复重启进程）出现 `boot_autostart` 重复触发，导致“进程重启后开关又被自动拉起”。
+  - 根因：
+    - `BootCompletedReceiver` 仅按 `startOnBoot` 开关决策，缺少“同一次开机只处理一次”的幂等保护。
+  - 处理：
+    - `SettingsStore` 新增 `lastHandledBootCount` 读写能力；
+    - `BootCompletedReceiver` 读取 `Settings.Global.BOOT_COUNT`，若与已处理值一致则跳过；
+    - 首次成功派发 `boot_autostart` 后持久化当前 `bootCount`。
+  - 结果：
+    - 同一次开机内重复收到开机广播（或调试重启导致的重复触发）不会再次自动拉起网络。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.45 后台耗电提示收敛（2026-04-24）
+- 已完成：
+  - 修复 `ZeroTierVpnService` 停止后仍可能被系统按 `START_STICKY` 空命令重建的问题：
+    - 无法解析有效服务动作时，立即 `stopSelf(startId)` 并返回 `START_NOT_STICKY`。
+    - 手动 Stop 且 `keepServiceAlive=false` 后主动 `stopSelf()`。
+    - 最后一个网络 Leave 后进入 `STOPPED` 时主动 `stopSelf()`，避免服务实例继续保留网络观察器。
+  - 修复 TUN 输入异常后的低间隔轮询风险：
+    - 旧逻辑在输入流未切换时每 30ms 返回同一个 `FileInputStream` 重试；
+    - 若 FD 已失效，可能形成后台反复读同一坏 FD 的小轮询；
+    - 现改为只等待新输入流或线程中断，避免空闲/异常状态持续唤醒。
+- 说明：
+  - 未发现显式 `WakeLock`、`AlarmManager` 或重复定时任务；系统耗电提示更可能来自 VPN 前台服务常驻、服务空重建、TUN/UDP/native runtime 线程活跃。
+  - 连接态 VPN 本身仍会被系统归类为高耗电应用，这是常驻隧道类 App 的正常风险；本次处理的是可避免的空转与停止后驻留。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.46 对齐 ClashMetaForAndroid 的灭屏省电策略（2026-04-24）
+- 参考结论：
+  - `D:\IdeaProject\ClashMetaForAndroid\service\src\main\java\com\github\kr328\clash\service\clash\module\SuspendModule.kt`
+    - 根据 `PowerManager.isInteractive` 和 `ACTION_SCREEN_ON/OFF` 控制 `Clash.suspendCore(...)`。
+  - `D:\IdeaProject\ClashMetaForAndroid\service\src\main\java\com\github\kr328\clash\service\clash\module\DynamicNotificationModule.kt`
+    - 灭屏后停止 1 秒流量通知刷新，仅亮屏时动态更新可视通知。
+  - `D:\IdeaProject\ClashMetaForAndroid\service\src\main\java\com\github\kr328\clash\service\clash\module\NetworkObserveModule.kt`
+    - 网络监听使用 `NET_CAPABILITY_NOT_VPN / INTERNET / NOT_RESTRICTED` 过滤真实底层网络，避免 VPN 自身干扰网络变化策略。
+- 已完成：
+  - `ServiceTrafficController` 新增灭屏降频：
+    - 连接态仍可亮屏刷新流量通知；
+    - 灭屏后不再按 1.5s/3s 刷新可视通知，改为 60s 保守等待，减少锁屏后台唤醒。
+  - `NetworkChangeObserver` 改为监听真实底层网络：
+    - 使用 `NetworkRequest` 过滤非 VPN、可联网、非受限网络；
+    - 缓存回调中的 `NetworkCapabilities` 并按 Wi-Fi / Ethernet / Cellular 优先级选择当前传输类型；
+    - 回退读取默认网络时同样排除 VPN，避免 VPN 建立后把自身误判为底层网络。
+- 未直接照搬：
+  - 未实现 `suspendCore(true)` 等价能力，因为 ZeroTier SDK 当前没有“暂停核心但保持节点会话”的明确 API；强行停 Node 会改变在线状态与恢复语义。
+  - 当前只停可视通知刷新和策略噪声，核心隧道仍保持在线，保证 VPN 功能不被锁屏破坏。
 - 验证结果：
   - `:app:compileDebugKotlin` 通过。

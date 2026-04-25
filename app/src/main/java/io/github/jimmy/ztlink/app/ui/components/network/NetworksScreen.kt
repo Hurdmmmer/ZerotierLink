@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -56,6 +57,7 @@ import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
 import io.github.jimmy.ztlink.app.ui.components.common.ObserveUiEvents
+import io.github.jimmy.ztlink.app.ui.components.common.Pill
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 
 @Composable
@@ -337,11 +339,17 @@ private fun PlanetRouteStatusCard(
     rootServerIp: String?,
 ) {
     val colorScheme = MaterialTheme.colorScheme
-
-    val accentColor = when (planetRouteType) {
-        PlanetRouteType.OFFICIAL     -> colorScheme.primary
-        PlanetRouteType.NON_OFFICIAL -> colorScheme.tertiary
+    val semantic = ZtTheme.semantic
+    val isDarkThemeSurface = colorScheme.surface.luminance() < 0.5f
+    val routePillColors = remember(planetRouteType, semantic, colorScheme, isDarkThemeSurface) {
+        resolveNetworkPillColors(
+            semantic = planetRouteType.toPillSemantic(),
+            semanticColors = semantic,
+            colorScheme = colorScheme,
+            isDarkSurface = isDarkThemeSurface,
+        )
     }
+    val accentColor = routePillColors.tone
 
     data class Spec(
         val icon: ImageVector,
@@ -419,17 +427,17 @@ private fun PlanetRouteStatusCard(
                     )
                 }
 
-                // 胶囊 badge — 与 Banner 保持一致
-                Surface(
-                    shape  = CircleShape,
-                    color  = accentColor.copy(alpha = 0.10f),
-                    border = BorderStroke(0.5.dp, accentColor.copy(alpha = 0.30f)),
+                Pill(
+                    containerColor = routePillColors.container,
+                    shape = CircleShape,
+                    borderWidth = 0.5.dp,
+                    borderColor = routePillColors.border,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
                 ) {
                     Text(
-                        text     = spec.badgeText,
-                        style    = MaterialTheme.typography.labelSmall,
-                        color    = accentColor,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        text = spec.badgeText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = routePillColors.tone,
                     )
                 }
             }

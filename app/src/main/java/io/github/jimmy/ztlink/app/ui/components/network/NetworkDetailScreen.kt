@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -365,88 +366,64 @@ private fun NetworkDetailMetaLine(
 
 /**
  * 状态 Pill + LAN 标签行。
- *
- * 颜色策略（对齐 mockup）：
- * - CONNECTED     → semantic.connected 淡背景 + 原色前景，跟随主题色
- * - REQUESTING    → secondaryContainer / onSecondaryContainer
- * - AUTH_REQUIRED → primaryContainer / onPrimaryContainer
- * - NO_CONNECTION → surfaceContainerHighest / onSurfaceVariant
- * - DISCONNECTED  → surfaceVariant / onSurfaceVariant（纯中性）
- * - ACCESS_DENIED / NOT_FOUND → errorContainer / onErrorContainer
- * - LAN           → primaryContainer / onPrimaryContainer，与 IP 同色相
  */
 @Composable
 private fun StatusRow(status: NetworkStatus, isLan: Boolean) {
     val dimen = ZtTheme.dimen
     val semantic = ZtTheme.semantic
+    val colorScheme = MaterialTheme.colorScheme
+    val isDarkThemeSurface = colorScheme.surface.luminance() < 0.5f
+    val statusPillColors = resolveNetworkPillColors(
+        semantic = status.toPillSemantic(),
+        semanticColors = semantic,
+        colorScheme = colorScheme,
+        isDarkSurface = isDarkThemeSurface,
+    )
+    val lanPillColors = resolveNetworkPillColors(
+        semantic = NetworkPillSemantic.SUCCESS,
+        semanticColors = semantic,
+        colorScheme = colorScheme,
+        isDarkSurface = isDarkThemeSurface,
+    )
+    val label = when (status) {
+        NetworkStatus.CONNECTED -> stringResource(R.string.network_status_connected)
+        NetworkStatus.MONITORING -> stringResource(R.string.network_status_monitoring)
+        NetworkStatus.REQUESTING_CONFIGURATION -> stringResource(R.string.network_status_requesting_configuration)
+        NetworkStatus.AUTHENTICATION_REQUIRED -> stringResource(R.string.network_status_authentication_required)
+        NetworkStatus.NO_CONNECTION -> stringResource(R.string.network_status_no_connection)
+        NetworkStatus.DISCONNECTED -> stringResource(R.string.network_status_disconnected)
+        NetworkStatus.ACCESS_DENIED -> stringResource(R.string.network_status_access_denied)
+        NetworkStatus.NOT_FOUND -> stringResource(R.string.network_status_not_found)
+    }
 
     Row(
         horizontalArrangement = Arrangement.spacedBy(dimen.space8),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val (bg, fg, label) = when (status) {
-            NetworkStatus.CONNECTED -> Triple(
-                semantic.connected.copy(alpha = 0.15f),
-                semantic.connected,
-                stringResource(R.string.network_status_connected),
-            )
-            NetworkStatus.MONITORING -> Triple(
-                MaterialTheme.colorScheme.tertiaryContainer,
-                MaterialTheme.colorScheme.onTertiaryContainer,
-                stringResource(R.string.network_status_monitoring),
-            )
-            NetworkStatus.REQUESTING_CONFIGURATION -> Triple(
-                MaterialTheme.colorScheme.secondaryContainer,
-                MaterialTheme.colorScheme.onSecondaryContainer,
-                stringResource(R.string.network_status_requesting_configuration),
-            )
-            NetworkStatus.AUTHENTICATION_REQUIRED -> Triple(
-                MaterialTheme.colorScheme.primaryContainer,
-                MaterialTheme.colorScheme.onPrimaryContainer,
-                stringResource(R.string.network_status_authentication_required),
-            )
-            NetworkStatus.NO_CONNECTION -> Triple(
-                MaterialTheme.colorScheme.surfaceContainerHighest,
-                MaterialTheme.colorScheme.onSurfaceVariant,
-                stringResource(R.string.network_status_no_connection),
-            )
-            NetworkStatus.DISCONNECTED -> Triple(
-                MaterialTheme.colorScheme.surfaceVariant,
-                MaterialTheme.colorScheme.onSurfaceVariant,
-                stringResource(R.string.network_status_disconnected),
-            )
-            NetworkStatus.ACCESS_DENIED -> Triple(
-                MaterialTheme.colorScheme.errorContainer,
-                MaterialTheme.colorScheme.onErrorContainer,
-                stringResource(R.string.network_status_access_denied),
-            )
-            NetworkStatus.NOT_FOUND -> Triple(
-                MaterialTheme.colorScheme.errorContainer,
-                MaterialTheme.colorScheme.onErrorContainer,
-                stringResource(R.string.network_status_not_found),
-            )
-        }
-
         Pill(
-            containerColor = bg,
+            containerColor = statusPillColors.container,
+            borderWidth = 0.5.dp,
+            borderColor = statusPillColors.border,
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
         ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                color = fg,
+                color = statusPillColors.tone,
             )
         }
 
         if (isLan) {
             Pill(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                containerColor = lanPillColors.container,
+                borderWidth = 0.5.dp,
+                borderColor = lanPillColors.border,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
             ) {
                 Text(
                     text = stringResource(R.string.network_lan),
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = lanPillColors.tone,
                 )
             }
         }

@@ -4,12 +4,15 @@ import android.Manifest
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
-import android.os.SystemClock
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.jimmy.ztlink.data.settings.SettingsStateHolder
+import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
+import io.github.jimmy.ztlink.service.observer.NetworkTransport
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -149,7 +152,11 @@ class RoutePolicyEvaluator @Inject constructor(
      * @param reason 触发原因。
      * @return 策略决策结果。
      */
-    suspend fun evaluate(reason: String): RoutePolicyDecision {
+    suspend fun evaluate(
+        reason: String,
+        observedTransport: NetworkTransport? = null,
+        observedWifiSsid: String? = null,
+    ): RoutePolicyDecision {
         val settings = settingsStateHolder.currentState()
         if (!settings.planetUseCustom) {
             // 关键逻辑：
@@ -170,7 +177,7 @@ class RoutePolicyEvaluator @Inject constructor(
                 enabled = false,
             )
         }
-        val configuredSsid = settings.probeWifiSsid.trim()
+        val configuredSsid = normalizeSsid(settings.probeWifiSsid)
         if (configuredSsid.isBlank()) {
             return RoutePolicyDecision(
                 action = RoutePolicyAction.KEEP_RUNNING,
@@ -179,16 +186,37 @@ class RoutePolicyEvaluator @Inject constructor(
                 enabled = true,
             )
         }
-        val activeNetwork = connectivityManager.activeNetwork ?: return RoutePolicyDecision(
+        when (observedTransport) {
+            NetworkTransport.CELLULAR,
+            NetworkTransport.ETHERNET,
+            -> {
+                return RoutePolicyDecision(
+                    action = RoutePolicyAction.RESUME_RELAY,
+                    inIntranet = false,
+                    detail = "observed_transport_not_wifi,transport:$observedTransport,reason:$reason",
+                    enabled = true,
+                )
+            }
+
+            NetworkTransport.NONE -> {
+                return RoutePolicyDecision(
+                    action = RoutePolicyAction.KEEP_RUNNING,
+                    inIntranet = null,
+                    detail = "observed_transport_none,reason:$reason",
+                    enabled = true,
+                )
+            }
+
+            NetworkTransport.WIFI,
+            NetworkTransport.VPN,
+            NetworkTransport.UNKNOWN,
+            null,
+            -> Unit
+        }
+        val capabilities = resolveActiveUnderlyingNetworkCapabilities() ?: return RoutePolicyDecision(
             action = RoutePolicyAction.KEEP_RUNNING,
             inIntranet = null,
-            detail = "no_active_network",
-            enabled = true,
-        )
-        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return RoutePolicyDecision(
-            action = RoutePolicyAction.KEEP_RUNNING,
-            inIntranet = null,
-            detail = "no_active_network_capabilities",
+            detail = "no_active_underlying_network",
             enabled = true,
         )
         if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
@@ -199,7 +227,10 @@ class RoutePolicyEvaluator @Inject constructor(
                 enabled = true,
             )
         }
-        val currentSsid = currentWifiSsid() ?: return RoutePolicyDecision(
+        val currentSsid = normalizeSsid(observedWifiSsid.orEmpty())
+            .takeIf { it.isNotBlank() && !it.equals("<unknown ssid>", ignoreCase = true) }
+            ?: currentWifiSsid(capabilities)
+            ?: return RoutePolicyDecision(
             action = RoutePolicyAction.KEEP_RUNNING,
             inIntranet = null,
             detail = "current_wifi_unknown",
@@ -219,10 +250,9 @@ class RoutePolicyEvaluator @Inject constructor(
      *
      * @return 当前 SSID；不可读时返回 null。
      */
-    private fun currentWifiSsid(): String? {
-        val activeNetwork = connectivityManager.activeNetwork ?: return null
-        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return null
-        if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+    private fun currentWifiSsid(capabilities: NetworkCapabilities? = null): String? {
+        val activeCapabilities = capabilities ?: resolveActiveUnderlyingNetworkCapabilities() ?: return null
+        if (!activeCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
             return null
         }
         val hasLocationPermission =
@@ -233,13 +263,49 @@ class RoutePolicyEvaluator @Inject constructor(
         if (!hasLocationPermission) {
             return null
         }
-        val raw = wifiManager.connectionInfo?.ssid ?: return null
-        // Android 返回值通常带双引号，需要统一归一化。
-        val normalized = raw.trim().trim('"')
+        val normalized = readSsidFromTransportInfo(activeCapabilities)
+            ?: normalizeSsid(wifiManager.connectionInfo?.ssid.orEmpty())
         if (normalized.isBlank() || normalized.equals("<unknown ssid>", ignoreCase = true)) {
             return null
         }
         return normalized
+    }
+
+    private fun readSsidFromTransportInfo(capabilities: NetworkCapabilities): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return null
+        }
+        val wifiInfo = capabilities.transportInfo as? WifiInfo ?: return null
+        return normalizeSsid(wifiInfo.ssid.orEmpty()).takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * 解析当前真实底层网络能力。
+     *
+     * 关键原因：
+     * - VPN 建立后 `activeNetwork` 可能变成 VPN 自身；
+     * - SSID 策略必须读取 Wi-Fi/蜂窝/以太网这类底层网络，否则会把 VPN 误判为非 Wi-Fi，
+     *   进而错误恢复或无法进入仅监听。
+     */
+    private fun resolveActiveUnderlyingNetworkCapabilities(): NetworkCapabilities? {
+        val activeCapabilities = connectivityManager.activeNetwork
+            ?.let { connectivityManager.getNetworkCapabilities(it) }
+            ?.takeIf { it.isUsableUnderlyingNetwork() }
+        if (activeCapabilities != null) {
+            return activeCapabilities
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            return null
+        }
+        return connectivityManager.allNetworks
+            .asSequence()
+            .mapNotNull { connectivityManager.getNetworkCapabilities(it) }
+            .filter { it.isUsableUnderlyingNetwork() }
+            .minByOrNull { it.transportPriority() }
+    }
+
+    private fun normalizeSsid(value: String): String {
+        return value.trim().trim('"')
     }
 }
 
@@ -249,13 +315,11 @@ class RoutePolicyEvaluator @Inject constructor(
 @Singleton
 class RoutePolicyCoordinator @Inject constructor(
     private val evaluator: RoutePolicyEvaluator,
+    private val networkChangeObserver: NetworkChangeObserver,
 ) {
 
     /** 自动检测互斥锁。 */
     private val runningMutex: Mutex = Mutex()
-
-    /** 手动连接保护窗口截止时间（elapsedRealtime）。 */
-    private val manualProtectionDeadlineMsRef: AtomicReference<Long> = AtomicReference(0L)
 
     /** Runtime 委托。 */
     private val runtimeDelegateRef: AtomicReference<RoutePolicyRuntimeDelegate?> = AtomicReference(null)
@@ -268,36 +332,6 @@ class RoutePolicyCoordinator @Inject constructor(
     fun bindRuntimeDelegate(delegate: RoutePolicyRuntimeDelegate?) {
         runtimeDelegateRef.set(delegate)
         logChain("策略委托绑定 attached=${delegate != null}")
-    }
-
-    /**
-     * 更新“手动连接保护窗口”截止时间。
-     *
-     * @param hasExplicitNetworkId 是否显式指定了网络 ID。
-     * @param protectionMs 保护窗口时长（毫秒）。
-     * @return 新的保护截止时间戳（毫秒）。
-     */
-    fun updateManualProtectionDeadline(
-        hasExplicitNetworkId: Boolean,
-        protectionMs: Long,
-    ): Long {
-        if (!hasExplicitNetworkId) {
-            manualProtectionDeadlineMsRef.set(0L)
-            logChain("手动保护窗口已清除 原因=implicit_start")
-            return 0L
-        }
-        val deadline = SystemClock.elapsedRealtime() + protectionMs
-        manualProtectionDeadlineMsRef.set(deadline)
-        logChain("手动保护窗口已更新 截止=$deadline 时长Ms=$protectionMs")
-        return deadline
-    }
-
-    /**
-     * 清理手动连接保护窗口。
-     */
-    fun clearManualProtectionDeadline() {
-        manualProtectionDeadlineMsRef.set(0L)
-        logChain("手动保护窗口已清除 原因=explicit_clear")
     }
 
     /**
@@ -316,18 +350,17 @@ class RoutePolicyCoordinator @Inject constructor(
      *    避免在动作互斥锁内出现递归调用导致的重入问题。
      *
      * @param reason 触发原因。
-     * @param hasExplicitNetworkId 是否显式指定了网络 ID。
      * @return 启动阶段策略检查结果。
      */
     suspend fun checkStartPolicy(
         reason: String,
-        hasExplicitNetworkId: Boolean,
     ): StartPolicyCheckResult {
-        logChain("启动策略检查开始 原因=$reason 显式网络=$hasExplicitNetworkId")
-        if (hasExplicitNetworkId) {
-            updateManualProtectionDeadline(hasExplicitNetworkId = true, protectionMs = DEFAULT_MANUAL_PROTECTION_MS)
-        }
-        val decision = evaluator.evaluate(reason)
+        logChain("启动策略检查开始 原因=$reason")
+        val decision = evaluator.evaluate(
+            reason = reason,
+            observedTransport = null,
+            observedWifiSsid = networkChangeObserver.currentWifiSsid(),
+        )
         val delegate = runtimeDelegateRef.get()
         if (delegate != null) {
             delegate.dispatchIntranetState(
@@ -360,11 +393,9 @@ class RoutePolicyCoordinator @Inject constructor(
      */
     suspend fun handleStartPolicy(
         reason: String,
-        hasExplicitNetworkId: Boolean,
     ): Boolean {
         return checkStartPolicy(
             reason = reason,
-            hasExplicitNetworkId = hasExplicitNetworkId,
         ).shouldEnterMonitorOnly
     }
 
@@ -374,7 +405,28 @@ class RoutePolicyCoordinator @Inject constructor(
      * @param reason 触发原因。
      */
     suspend fun triggerAutoRoutePolicyCheck(reason: String) {
-        logChain("自动策略复检开始 原因=$reason")
+        triggerAutoRoutePolicyCheck(
+            reason = reason,
+            observedTransport = null,
+        )
+    }
+
+    /**
+     * 触发自动路由策略复检。
+     *
+     * @param reason 触发原因。
+     * @param observedTransport 网络观察器已解析出的目标传输类型；可空时由评估器自行读取系统网络。
+     */
+    suspend fun triggerAutoRoutePolicyCheck(
+        reason: String,
+        observedTransport: NetworkTransport?,
+        observedWifiSsid: String? = null,
+    ) {
+        val liveWifiSsid = when (observedTransport) {
+            NetworkTransport.WIFI -> networkChangeObserver.currentWifiSsid() ?: observedWifiSsid
+            else -> observedWifiSsid
+        }
+        logChain("自动策略复检开始 原因=$reason 观察传输=${observedTransport ?: "none"} 观察SSID=${liveWifiSsid ?: "none"}")
         runningMutex.withLock {
             val delegate = runtimeDelegateRef.get()
             if (delegate == null) {
@@ -385,7 +437,11 @@ class RoutePolicyCoordinator @Inject constructor(
                 logChain("自动策略复检跳过 原因=$reason 详情=service_not_running")
                 return@withLock
             }
-            val decision = evaluator.evaluate(reason)
+            val decision = evaluator.evaluate(
+                reason = reason,
+                observedTransport = observedTransport,
+                observedWifiSsid = liveWifiSsid,
+            )
             delegate.dispatchIntranetState(
                 IntranetCheckState(
                     enabled = decision.enabled,
@@ -403,9 +459,8 @@ class RoutePolicyCoordinator @Inject constructor(
             when (decision.action) {
                 RoutePolicyAction.KEEP_RUNNING -> Unit
                 RoutePolicyAction.ENTER_MONITOR_ONLY -> {
-                    val now = SystemClock.elapsedRealtime()
-                    if (now < (manualProtectionDeadlineMsRef.get() ?: 0L)) {
-                        logChain("自动策略跳过进入仅监听 原因=$reason 详情=manual_protection_window")
+                    if (delegate.isMonitorOnlyMode()) {
+                        logChain("自动策略跳过进入仅监听 原因=$reason 详情=already_monitor_only")
                         return@withLock
                     }
                     delegate.enterMonitorOnly(reason, decision.detail)
@@ -429,7 +484,22 @@ class RoutePolicyCoordinator @Inject constructor(
     private companion object {
         private const val TAG = "RoutePolicyCoordinator"
         private const val LOG_KEY = "ZTL_CHAIN"
-        /** 默认手动连接保护窗口时长。 */
-        private const val DEFAULT_MANUAL_PROTECTION_MS: Long = 15_000L
+    }
+}
+
+/** 判断该网络是否适合作为 VPN 底层网络。 */
+private fun NetworkCapabilities.isUsableUnderlyingNetwork(): Boolean {
+    return hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        !hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+}
+
+/** 网络优先级：Wi-Fi/以太网优先，其次蜂窝，其他网络靠后。 */
+private fun NetworkCapabilities.transportPriority(): Int {
+    return when {
+        hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 0
+        hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 1
+        hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 2
+        else -> 10
     }
 }

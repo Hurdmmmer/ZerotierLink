@@ -5,6 +5,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.ConcurrentHashMap
@@ -34,6 +36,7 @@ data class NetworkChangeEvent(
     val reason: String,
     val from: NetworkTransport,
     val to: NetworkTransport,
+    val wifiSsid: String? = null,
 )
 
 /**
@@ -67,6 +70,8 @@ class NetworkChangeObserver @Inject constructor(
     /** 系统连接管理器。 */
     private val connectivityManager: ConnectivityManager =
         appContext.getSystemService(ConnectivityManager::class.java)
+    private val wifiManager: WifiManager =
+        appContext.applicationContext.getSystemService(WifiManager::class.java)
 
     /** 当前回调实例。 */
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -89,29 +94,63 @@ class NetworkChangeObserver @Inject constructor(
             return
         }
 
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                updateObservedNetwork(network)
-                dispatch(listener, "network_available")
-            }
-
-            override fun onLost(network: Network) {
-                observedNetworks.remove(network)
-                dispatch(listener, "network_lost")
-            }
-
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                if (networkCapabilities.isUsableUnderlyingNetwork()) {
-                    observedNetworks[network] = networkCapabilities
-                } else {
-                    observedNetworks.remove(network)
-                }
-                dispatch(listener, "network_capabilities_changed")
-            }
-        }
+        val callback = buildNetworkCallback(listener)
         networkCallback = callback
         lastTransport = resolveTransport()
         connectivityManager.registerNetworkCallback(buildUnderlyingNetworkRequest(), callback)
+    }
+
+    /**
+     * 构建系统网络回调。
+     *
+     * Android 12+ 默认会对 `NetworkCapabilities.transportInfo` 里的 Wi-Fi SSID 脱敏。
+     * 策略判断明确依赖用户配置的 SSID，因此这里需要请求包含位置信息的回调。
+     */
+    private fun buildNetworkCallback(listener: NetworkChangeListener): ConnectivityManager.NetworkCallback {
+        val callback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            object : ConnectivityManager.NetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
+                override fun onAvailable(network: Network) {
+                    updateObservedNetwork(network)
+                    dispatch(listener, "network_available")
+                }
+
+                override fun onLost(network: Network) {
+                    observedNetworks.remove(network)
+                    dispatch(listener, "network_lost")
+                }
+
+                override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                    updateObservedCapabilities(network, networkCapabilities)
+                    dispatch(listener, "network_capabilities_changed")
+                }
+            }
+        } else {
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    updateObservedNetwork(network)
+                    dispatch(listener, "network_available")
+                }
+
+                override fun onLost(network: Network) {
+                    observedNetworks.remove(network)
+                    dispatch(listener, "network_lost")
+                }
+
+                override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                    updateObservedCapabilities(network, networkCapabilities)
+                    dispatch(listener, "network_capabilities_changed")
+                }
+            }
+        }
+        return callback
+    }
+
+    private fun updateObservedCapabilities(network: Network, networkCapabilities: NetworkCapabilities) {
+        if (networkCapabilities.isUsableUnderlyingNetwork()) {
+            observedNetworks[network] = networkCapabilities
+        } else {
+            observedNetworks.remove(network)
+        }
     }
 
     /**
@@ -150,9 +189,34 @@ class NetworkChangeObserver @Inject constructor(
                 reason = reason,
                 from = previous,
                 to = current,
+                wifiSsid = currentWifiSsid(),
             ),
         )
     }
+
+    /**
+     * 运行时实时读取当前 Wi-Fi SSID。
+     *
+     * 读取顺序：
+     * 1. 实时查询当前底层网络能力并读取 transportInfo；
+     * 2. 最后回退到 WifiManager.connectionInfo。
+     *
+     * 注意：
+     * 不使用观察器缓存兜底，保证每次策略判断都基于实时系统状态。
+     */
+    fun currentWifiSsid(): String? {
+        val liveCapabilities = resolveCurrentUnderlyingWifiCapabilitiesLive()
+        val live = liveCapabilities?.wifiSsid()
+        if (live != null) {
+            return live
+        }
+        return sanitizeSsid(wifiManager.connectionInfo?.ssid)
+    }
+
+    /**
+     * 返回当前观察到的底层网络传输类型快照。
+     */
+    fun currentTransport(): NetworkTransport = resolveTransport()
 
     /**
      * 解析当前网络传输类型。
@@ -213,6 +277,20 @@ class NetworkChangeObserver @Inject constructor(
         val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return null
         return capabilities.takeIf { it.isUsableUnderlyingNetwork() }
     }
+
+    /** 实时查询当前底层 Wi-Fi 能力。 */
+    private fun resolveCurrentUnderlyingWifiCapabilitiesLive(): NetworkCapabilities? {
+        val active = resolveActiveUnderlyingNetworkCapabilities()
+            ?.takeIf { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }
+        if (active != null) {
+            return active
+        }
+        return connectivityManager.allNetworks
+            .asSequence()
+            .mapNotNull { connectivityManager.getNetworkCapabilities(it) }
+            .filter { it.isUsableUnderlyingNetwork() && it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }
+            .minByOrNull { it.transportPriority() }
+    }
 }
 
 /** 判断该网络是否适合作为 VPN 底层网络。 */
@@ -230,4 +308,17 @@ private fun NetworkCapabilities.transportPriority(): Int {
         hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 2
         else -> 10
     }
+}
+
+/** 从网络能力中读取未脱敏的 Wi-Fi SSID。 */
+private fun NetworkCapabilities.wifiSsid(): String? {
+    val wifiInfo = transportInfo as? WifiInfo ?: return null
+    return sanitizeSsid(wifiInfo.ssid)
+}
+
+private fun sanitizeSsid(value: String?): String? {
+    return value
+        ?.trim()
+        ?.trim('"')
+        ?.takeIf { it.isNotBlank() && !it.equals("<unknown ssid>", ignoreCase = true) }
 }

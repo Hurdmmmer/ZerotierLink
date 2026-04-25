@@ -139,6 +139,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             return START_NOT_STICKY
         }
         logChain("收到服务命令 startId=$startId 动作=${actionSummary(action)}")
+        startForegroundForAcceptedCommand(action)
         serviceScope.launch {
             executeAction(action)
         }
@@ -265,27 +266,25 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             )
         }
 
-        routePolicyCoordinator.updateManualProtectionDeadline(
-            hasExplicitNetworkId = action.hasExplicitNetworkId,
-            protectionMs = MANUAL_PROTECTION_MS,
-        )
-
         val targetNetworkId = resolveStartOrResumeTargetNetworkId(action)
+        if (targetNetworkId == null) {
+            val stoppedState = ServiceState.stopped()
+            stateStore.setState(stoppedState)
+            logChain("启动或恢复忽略 原因=no_target_network 触发=${action.reason}")
+            stopForegroundAndReset()
+            stopSelf()
+            return ServiceActionResult(
+                accepted = true,
+                terminalState = stoppedState,
+            )
+        }
+
         stateStore.setState(
             ServiceState.starting(
                 reason = action.reason,
                 targetNetworkId = targetNetworkId,
             ),
         )
-
-        if (targetNetworkId == null) {
-            val stoppedState = ServiceState.stopped()
-            stateStore.setState(stoppedState)
-            return ServiceActionResult(
-                accepted = true,
-                terminalState = stoppedState,
-            )
-        }
 
         val targetEntity = networkRepository.findById(targetNetworkId)
             ?: return terminalFailure(
@@ -332,7 +331,6 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         // 若当前命中“内网 SSID 自动暂停”条件，则直接进入仅监控模式，不启动内核。
         val startPolicy = routePolicyCoordinator.checkStartPolicy(
             reason = action.reason,
-            hasExplicitNetworkId = action.hasExplicitNetworkId,
         )
         if (startPolicy.shouldEnterMonitorOnly) {
             logChain(
@@ -1000,6 +998,54 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     }
 
     /**
+     * 对需要长时间运行的用户命令立即进入前台服务。
+     *
+     * 设计原因：
+     * - Android 要求 `startForegroundService` 后尽快调用 `startForeground`；
+     * - 通知应表达“用户已开启网络”，后续连接/仅监听/已连接状态再由 `ServiceStateController` 覆盖。
+     */
+    private fun startForegroundForAcceptedCommand(action: ServiceAction) {
+        when (action) {
+            is ServiceAction.Join -> {
+                val networkId = action.params.networkId
+                notificationController.bindConnectingNetwork(
+                    networkName = action.params.displayName.ifBlank { networkId.value },
+                    networkIdText = networkId.value,
+                )
+                startForegroundNotification()
+            }
+
+            is ServiceAction.ResumeRelay -> {
+                notificationController.bindStatus(
+                    title = getString(R.string.service_notification_connecting_title, getString(R.string.app_name)),
+                    content = getString(R.string.service_notification_connecting_content),
+                )
+                startForegroundNotification()
+            }
+
+            is ServiceAction.StartOrResume -> {
+                notificationController.bindStatus(
+                    title = getString(R.string.service_notification_connecting_title, getString(R.string.app_name)),
+                    content = getString(R.string.service_notification_connecting_content),
+                )
+                startForegroundNotification()
+            }
+
+            is ServiceAction.EnterMonitorOnly,
+            is ServiceAction.Leave,
+            is ServiceAction.Stop,
+            is ServiceAction.SyncNetworkConfig,
+            is ServiceAction.ReconfigureTunnel,
+            is ServiceAction.OrbitMoons,
+            is ServiceAction.DeorbitMoons,
+            is ServiceAction.QueryPeers,
+            is ServiceAction.QueryNode,
+            is ServiceAction.QueryNetworkConfig,
+            -> Unit
+        }
+    }
+
+    /**
      * 兼容不同 Android 版本停止前台通知。
      */
     private fun stopForegroundCompat(remove: Boolean) {
@@ -1084,9 +1130,6 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
         /** 包名格式校验器。 */
         private val PACKAGE_NAME_REGEX = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
-
-        /** 手动连接保护窗口（毫秒）。 */
-        private const val MANUAL_PROTECTION_MS: Long = 15_000L
 
         /** 启动或恢复连接。 */
         const val ACTION_START_OR_RESUME: String = "io.github.jimmy.ztlink.action.START_OR_RESUME"

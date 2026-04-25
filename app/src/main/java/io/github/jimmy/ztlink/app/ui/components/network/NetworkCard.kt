@@ -69,7 +69,7 @@ private data class StatusVisualSpec(
     val accent: Color,
     val pending: Boolean,
     val tone: StatusVisualTone,
-    val pillContainerColor: Color,
+    val pillColors: NetworkPillColors,
 )
 
 private fun buildStatusVisualSpec(
@@ -78,68 +78,64 @@ private fun buildStatusVisualSpec(
     colorScheme: androidx.compose.material3.ColorScheme,
     isDarkThemeSurface: Boolean,
 ): StatusVisualSpec {
-    val authPendingAccent = lerp(
-        colorScheme.tertiary,
-        colorScheme.error,
-        if (isDarkThemeSurface) 0.12f else 0.08f,
+    val pillColors = resolveNetworkPillColors(
+        semantic = status.toPillSemantic(),
+        semanticColors = semantic,
+        colorScheme = colorScheme,
+        isDarkSurface = isDarkThemeSurface,
     )
-    val noConnectionAccent = lerp(
-        colorScheme.secondary,
-        colorScheme.error,
-        if (isDarkThemeSurface) 0.18f else 0.12f,
-    )
+    val pending = status.isPendingStatus()
 
     return when (status) {
         NetworkStatus.CONNECTED -> StatusVisualSpec(
-            accent = semantic.connected,
-            pending = false,
+            accent = pillColors.tone,
+            pending = pending,
             tone = StatusVisualTone.CONNECTED,
-            pillContainerColor = semantic.connected.copy(alpha = if (isDarkThemeSurface) 0.24f else 0.14f),
+            pillColors = pillColors,
         )
 
         NetworkStatus.MONITORING -> StatusVisualSpec(
-            // 监听态并入“已连接”色系，避免出现第三套重色导致视觉割裂。
-            accent = semantic.connected,
-            pending = false,
-            tone = StatusVisualTone.CONNECTED,
-            pillContainerColor = semantic.connected.copy(alpha = if (isDarkThemeSurface) 0.20f else 0.12f),
+            accent = pillColors.tone,
+            pending = pending,
+            tone = StatusVisualTone.MONITORING,
+            pillColors = pillColors,
         )
 
         NetworkStatus.REQUESTING_CONFIGURATION -> StatusVisualSpec(
-            accent = semantic.root,
-            pending = true,
+            accent = pillColors.tone,
+            pending = pending,
             tone = StatusVisualTone.PENDING,
-            pillContainerColor = semantic.root.copy(alpha = if (isDarkThemeSurface) 0.34f else 0.20f),
+            pillColors = pillColors,
         )
 
         NetworkStatus.AUTHENTICATION_REQUIRED -> StatusVisualSpec(
-            accent = authPendingAccent,
-            pending = true,
+            accent = pillColors.tone,
+            pending = pending,
             tone = StatusVisualTone.PENDING,
-            pillContainerColor = authPendingAccent.copy(alpha = if (isDarkThemeSurface) 0.36f else 0.22f),
+            pillColors = pillColors,
         )
 
         NetworkStatus.NO_CONNECTION -> StatusVisualSpec(
-            accent = noConnectionAccent,
-            pending = false,
+            accent = pillColors.tone,
+            pending = pending,
             tone = StatusVisualTone.OFFLINE,
-            pillContainerColor = colorScheme.secondaryContainer,
+            pillColors = pillColors,
         )
 
         NetworkStatus.DISCONNECTED -> StatusVisualSpec(
-            accent = semantic.inactive,
-            pending = false,
+            accent = pillColors.tone,
+            pending = pending,
             tone = StatusVisualTone.INACTIVE,
-            pillContainerColor = colorScheme.surfaceContainerHighest.copy(alpha = 0.90f),
+            pillColors = pillColors,
         )
 
         NetworkStatus.ACCESS_DENIED,
         NetworkStatus.NOT_FOUND,
             -> StatusVisualSpec(
-            accent = semantic.errorStrong,
-            pending = false,
+            accent = pillColors.tone,
+            pending = pending,
             tone = StatusVisualTone.ERROR,
-            pillContainerColor = colorScheme.errorContainer,
+            pillColors = pillColors,
         )
     }
 }
@@ -164,6 +160,14 @@ fun NetworkCard(
             semantic = semantic,
             colorScheme = colorScheme,
             isDarkThemeSurface = isDarkThemeSurface,
+        )
+    }
+    val lanPillColors = remember(semantic, colorScheme, isDarkThemeSurface) {
+        resolveNetworkPillColors(
+            semantic = NetworkPillSemantic.SUCCESS,
+            semanticColors = semantic,
+            colorScheme = colorScheme,
+            isDarkSurface = isDarkThemeSurface,
         )
     }
 
@@ -290,10 +294,11 @@ fun NetworkCard(
 
                 StatusPill(
                     status = network.status,
-                    accent = statusSpec.accent,
+                    accent = statusSpec.pillColors.tone,
                     pending = statusSpec.pending,
-                    containerColor = statusSpec.pillContainerColor,
-                    textColor = primaryTextColor,
+                    containerColor = statusSpec.pillColors.container,
+                    borderColor = statusSpec.pillColors.border,
+                    textColor = statusSpec.pillColors.tone,
                 )
 
                 Switch(
@@ -376,7 +381,7 @@ fun NetworkCard(
             ) {
                 if (network.isLan) {
                     LanChip(
-                        tint = semantic.connected,
+                        colors = lanPillColors,
                     )
                 }
                 if (network.p2pSummary.isNotBlank()) {
@@ -480,6 +485,7 @@ private fun StatusPill(
     accent: Color,
     pending: Boolean,
     containerColor: Color,
+    borderColor: Color,
     textColor: Color,
 ) {
     val label = when (status) {
@@ -496,7 +502,7 @@ private fun StatusPill(
     Pill(
         containerColor = containerColor,
         borderWidth = 0.5.dp,
-        borderColor = textColor.copy(alpha = 0.28f),
+        borderColor = borderColor,
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
     ) {
         if (pending) {
@@ -558,12 +564,11 @@ private fun MetaField(
 }
 
 @Composable
-private fun LanChip(tint: Color) {
-    val colorScheme = MaterialTheme.colorScheme
+private fun LanChip(colors: NetworkPillColors) {
     Pill(
-        containerColor = tint.copy(alpha = 0.11f),
+        containerColor = colors.container,
         borderWidth = 0.5.dp,
-        borderColor = tint.copy(alpha = 0.36f),
+        borderColor = colors.border,
         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
@@ -571,12 +576,12 @@ private fun LanChip(tint: Color) {
             imageVector = Icons.Outlined.Home,
             contentDescription = null,
             modifier = Modifier.size(10.dp),
-            tint = tint,
+            tint = colors.tone,
         )
         Text(
             text = stringResource(R.string.network_lan),
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-            color = colorScheme.onSurface,
+            color = colors.tone,
         )
     }
 }

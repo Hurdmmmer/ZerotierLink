@@ -3,7 +3,6 @@ package io.github.jimmy.ztlink.app.ui.components.moons
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,8 +39,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -57,6 +54,7 @@ import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
 import io.github.jimmy.ztlink.app.ui.components.common.BouncyOverScroll
 import io.github.jimmy.ztlink.app.ui.components.common.ObserveUiEvents
 import io.github.jimmy.ztlink.app.ui.components.common.Pill
+import io.github.jimmy.ztlink.app.ui.components.common.SummaryMetricCell
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 
 @Composable
@@ -311,13 +309,13 @@ private fun MoonSummaryCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                MoonSummaryMetricCell(
+                SummaryMetricCell(
                     label = stringResource(R.string.moon_source_file),
                     value = summary.fromFileCount,
                     tint = semantic.root,
                     modifier = Modifier.weight(1f),
                 )
-                MoonSummaryMetricCell(
+                SummaryMetricCell(
                     label = stringResource(R.string.moon_source_orbit),
                     value = summary.fromOrbitCount,
                     tint = semantic.connected,
@@ -329,13 +327,13 @@ private fun MoonSummaryCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                MoonSummaryMetricCell(
+                SummaryMetricCell(
                     label = stringResource(R.string.moon_cache_cached),
                     value = summary.cachedCount,
                     tint = semantic.connected,
                     modifier = Modifier.weight(1f),
                 )
-                MoonSummaryMetricCell(
+                SummaryMetricCell(
                     label = stringResource(R.string.moon_cache_wait_to_fetch),
                     value = summary.waitingFetchCount,
                     tint = colors.onSurfaceVariant,
@@ -343,52 +341,6 @@ private fun MoonSummaryCard(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun MoonSummaryMetricCell(
-    label: String,
-    value: Int,
-    tint: Color,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .clip(MaterialTheme.shapes.medium)
-            .background(tint.copy(alpha = 0.10f))
-            .border(
-                width = 0.45.dp,
-                color = tint.copy(alpha = 0.28f),
-                shape = MaterialTheme.shapes.medium,
-            )
-            .padding(horizontal = 8.dp, vertical = 5.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
-    ) {
-        Text(
-            text = value.toString(),
-            style = MaterialTheme.typography.titleSmall.copy(
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.sp,
-            ),
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.sp,
-            ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.88f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
     }
 }
 

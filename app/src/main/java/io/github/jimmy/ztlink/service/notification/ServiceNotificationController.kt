@@ -338,6 +338,7 @@ class ServiceNotificationController @Inject constructor(
             .setSmallIcon(R.mipmap.ic_launcher)
             .setColor(ContextCompat.getColor(context, android.R.color.holo_orange_light))
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(pendingIntent)
