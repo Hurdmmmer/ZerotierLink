@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -51,6 +50,7 @@ import io.github.jimmy.ztlink.app.navigation.ZerotierNavHost
 import io.github.jimmy.ztlink.app.navigation.ZerotierTab
 import io.github.jimmy.ztlink.app.ui.theme.AppThemeProvider
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
+import io.github.jimmy.ztlink.util.ChainLog
 
 /**
  * Compose 单 Activity 入口。
@@ -101,7 +101,7 @@ private fun RequestNotificationPermissionIfNeeded() {
     val requestPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        Log.i(LOG_TAG, "[$LOG_KEY] 通知权限请求结果 granted=$granted")
+        ChainLog.i(LOG_TAG, "通知权限请求结果 granted=$granted")
     }
     LaunchedEffect(Unit) {
         val granted = ContextCompat.checkSelfPermission(
@@ -109,10 +109,10 @@ private fun RequestNotificationPermissionIfNeeded() {
             Manifest.permission.POST_NOTIFICATIONS,
         ) == PackageManager.PERMISSION_GRANTED
         if (granted) {
-            Log.i(LOG_TAG, "[$LOG_KEY] 通知权限已授权")
+            ChainLog.i(LOG_TAG, "通知权限已授权")
             return@LaunchedEffect
         }
-        Log.i(LOG_TAG, "[$LOG_KEY] 请求通知权限 原因=foreground_status_notification")
+        ChainLog.i(LOG_TAG, "请求通知权限 原因=foreground_status_notification")
         requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
@@ -273,4 +273,3 @@ fun ZerotierBottomBar(
 }
 
 private const val LOG_TAG: String = "MainActivity"
-private const val LOG_KEY: String = "ZTL_CHAIN"

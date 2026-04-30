@@ -62,8 +62,8 @@ class SettingsStore @Inject constructor(
         private val KEY_PLANET_USE_CUSTOM = booleanPreferencesKey(SettingsKeys.PLANET_USE_CUSTOM)
         /** 是否自动检查 Planet 路由 */
         private val KEY_PLANET_AUTO_ROUTE_CHECK = booleanPreferencesKey(SettingsKeys.PLANET_AUTO_ROUTE_CHECK)
-        /** 触发自动连接的指定 WiFi SSID */
-        private val KEY_PLANET_PROBE_WIFI_SSID = stringPreferencesKey(SettingsKeys.PLANET_PROBE_WIFI_SSID)
+        /** 触发自动路由策略的内网探测 IP */
+        private val KEY_PLANET_INTRANET_PROBE_IP = stringPreferencesKey(SettingsKeys.PLANET_INTRANET_PROBE_IP)
         /** Planet 来源类型（无、本地文件、URL） */
         private val KEY_PLANET_SOURCE_TYPE = stringPreferencesKey(SettingsKeys.PLANET_SOURCE_TYPE)
         /** Planet 来源的显示名称 */
@@ -105,7 +105,7 @@ class SettingsStore @Inject constructor(
             startOnBoot = prefs[KEY_START_ON_BOOT] ?: true,
             planetUseCustom = effectiveUseCustom,
             planetAutoRouteCheck = prefs[KEY_PLANET_AUTO_ROUTE_CHECK] ?: false,
-            probeWifiSsid = prefs[KEY_PLANET_PROBE_WIFI_SSID] ?: "",
+            planetIntranetProbeIp = prefs[KEY_PLANET_INTRANET_PROBE_IP] ?: "",
             planetSourceType = parsePlanetSourceType(prefs[KEY_PLANET_SOURCE_TYPE]),
             planetSourceDisplay = prefs[KEY_PLANET_SOURCE_DISPLAY] ?: "",
             planetSourceRawValue = prefs[KEY_PLANET_SOURCE_RAW_VALUE] ?: "",
@@ -158,7 +158,7 @@ class SettingsStore @Inject constructor(
             prefs[KEY_START_ON_BOOT] = state.startOnBoot
             prefs[KEY_PLANET_USE_CUSTOM] = state.planetUseCustom
             prefs[KEY_PLANET_AUTO_ROUTE_CHECK] = state.planetAutoRouteCheck
-            prefs[KEY_PLANET_PROBE_WIFI_SSID] = state.probeWifiSsid
+            prefs[KEY_PLANET_INTRANET_PROBE_IP] = state.planetIntranetProbeIp
             prefs[KEY_PLANET_SOURCE_TYPE] = state.planetSourceType.name
             prefs[KEY_PLANET_SOURCE_DISPLAY] = state.planetSourceDisplay
             prefs[KEY_PLANET_SOURCE_RAW_VALUE] = state.planetSourceRawValue

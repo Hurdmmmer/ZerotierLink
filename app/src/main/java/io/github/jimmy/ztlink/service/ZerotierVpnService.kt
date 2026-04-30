@@ -31,17 +31,17 @@ import io.github.jimmy.ztlink.model.service.ServiceErrorCode
 import io.github.jimmy.ztlink.model.service.ServiceState
 import io.github.jimmy.ztlink.model.service.ServiceStateType
 import io.github.jimmy.ztlink.service.controller.ServiceNetworkController
-import io.github.jimmy.ztlink.service.ServiceRuntimeObserverPipeline
 import io.github.jimmy.ztlink.service.controller.ServiceStateController
 import io.github.jimmy.ztlink.service.controller.ServiceTrafficController
 import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
 import io.github.jimmy.ztlink.service.notification.ServiceNotificationController
 import io.github.jimmy.ztlink.service.policy.IntranetCheckState
-import io.github.jimmy.ztlink.service.policy.RoutePolicyCoordinator
+import io.github.jimmy.ztlink.service.policy.RoutePolicyService
 import io.github.jimmy.ztlink.service.policy.RoutePolicyRuntimeDelegate
 import io.github.jimmy.ztlink.service.policy.ServiceStartNetworkGuard
 import io.github.jimmy.ztlink.service.runtime.RuntimeContext
 import io.github.jimmy.ztlink.service.runtime.RuntimeService
+import io.github.jimmy.ztlink.util.ChainLog
 import javax.inject.Inject
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
@@ -96,7 +96,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
     /** 路由策略协调器：根据网络环境决定中转/监控模式。 */
     @Inject
-    lateinit var routePolicyCoordinator: RoutePolicyCoordinator
+    lateinit var routePolicyService: RoutePolicyService
 
     /** Runtime 上下文：管理底层统计、IO 及配置回调。 */
     @Inject
@@ -124,7 +124,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         super.onCreate()
         logChain("Zertier VPN 服务已创建")
         runtimeService.bindVpnService(this)
-        routePolicyCoordinator.bindRuntimeDelegate(this)
+        routePolicyService.bindRuntimeDelegate(this)
         notificationController.initNotification()
 
         observerPipeline = createObserverPipeline()
@@ -170,7 +170,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         if (::observerPipeline.isInitialized) {
             observerPipeline.stop()
         }
-        routePolicyCoordinator.bindRuntimeDelegate(null)
+        routePolicyService.bindRuntimeDelegate(null)
         runtimeContext.setNetworkConfigCallback(null)
         runtimeService.unbindVpnService()
         serviceScope.cancel()
@@ -232,6 +232,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
                 is ServiceAction.Join -> handleJoin(action)
                 is ServiceAction.Leave -> handleLeave(action)
                 is ServiceAction.Stop -> handleStop(action)
+                is ServiceAction.NotificationDismissed -> handleNotificationDismissed(action)
                 is ServiceAction.EnterMonitorOnly -> handleEnterMonitorOnly(action)
                 is ServiceAction.ResumeRelay -> handleResumeRelay(action)
                 is ServiceAction.SyncNetworkConfig -> handleSyncNetworkConfig(
@@ -314,6 +315,11 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     private suspend fun handleJoin(action: ServiceAction.Join): ServiceActionResult {
         val networkId = action.params.networkId
 
+        // 关键逻辑：
+        // 启动指令执行时先根据“自动路由探测”开关决定是否启用网络切换监听，
+        // 关闭自动路由时不启动监听器，减少不必要唤醒。
+        syncNetworkObserverByPolicy()
+
         // 验证启动/加入环境条件（如网络权限、VPN准备状态等）
         val environmentError = startNetworkGuard.validateStartOrJoin()
         if (environmentError != null) {
@@ -328,20 +334,14 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         }
 
         // 启动前策略检查：
-        // 若当前命中“内网 SSID 自动暂停”条件，则直接进入仅监控模式，不启动内核。
-        val startPolicy = routePolicyCoordinator.checkStartPolicy(
-            reason = action.reason,
-        )
-        if (startPolicy.shouldEnterMonitorOnly) {
+        // 若当前命中“内网 IP 网段自动暂停”条件，则直接进入仅监控模式，不启动内核。
+        val currentPolicy = routePolicyService.checkStartPolicy(reason = action.reason,)
+        if (currentPolicy.shouldEnterMonitorOnly) {
             logChain(
-                "启动策略命中内网，加入链路直接进入仅监听 networkId=${networkId.value} 详情=${startPolicy.detail}",
+                "启动策略命中内网，加入链路直接进入仅监听 networkId=${networkId.value} 详情=${currentPolicy.detail}",
             )
             return handleEnterMonitorOnly(
-                ServiceAction.EnterMonitorOnly(
-                    networkId = networkId,
-                    detail = startPolicy.detail,
-                    reason = action.reason,
-                ),
+                ServiceAction.EnterMonitorOnly(networkId = networkId, detail = currentPolicy.detail, reason = action.reason,),
             )
         }
 
@@ -513,7 +513,10 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         }
         stateStore.setState(nextState)
         if (nextState.type == ServiceStateType.STOPPED) {
+            observerPipeline.stopNetworkObserver()
             stopSelf()
+        } else {
+            syncNetworkObserverByPolicy()
         }
 
         return ServiceActionResult(
@@ -654,6 +657,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     private suspend fun handleStop(action: ServiceAction.Stop): ServiceActionResult {
         // 完全停止服务时同步清理仅监听标记。
         runtimeService.updateMonitorOnlyMode(false)
+        observerPipeline.stopNetworkObserver()
         stateStore.setState(ServiceState.stopping(action.reason))
         val stopResult = runtimeService.stopRuntime(keepServiceAlive = action.keepServiceAlive)
         if (!stopResult.isRuntimeSuccess() && stopResult.resultCode != RuntimeResultCode.NOT_RUNNING) {
@@ -954,7 +958,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         val networkController = ServiceNetworkController(
             serviceScope = serviceScope,
             networkChangeObserver = networkChangeObserver,
-            routePolicyCoordinator = routePolicyCoordinator,
+            routePolicyService = routePolicyService,
             runtimeContext = runtimeContext,
             dispatchAction = { next -> executeAction(next) },
             networkRepository = networkRepository,
@@ -964,6 +968,27 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             trafficController = trafficController,
             networkController = networkController,
         )
+    }
+
+    /**
+     * 按“自动路由探测”开关同步网络监听器开关。
+     *
+     * 说明：
+     * 1. 仅当“自定义 Planet + 自动路由探测”都开启时才启动监听；
+     * 2. 关闭时立即停止监听，减少后台无意义唤醒；
+     * 3. 该方法幂等，重复调用不会引发额外开销。
+     */
+    private fun syncNetworkObserverByPolicy() {
+        if (!::observerPipeline.isInitialized) {
+            return
+        }
+        if (routePolicyService.shouldEnableNetworkObserver()) {
+            observerPipeline.startNetworkObserver()
+            logChain("自动路由已开启，网络监听器启动")
+        } else {
+            observerPipeline.stopNetworkObserver()
+            logChain("自动路由未开启，网络监听器关闭")
+        }
     }
 
     /**
@@ -995,6 +1020,43 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         } else {
             startForeground(ServiceNotificationController.NOTIFICATION_ID, notification)
         }
+    }
+
+    /**
+     * 处理“用户滑动移除通知”事件。
+     *
+     * 说明：
+     * 1. 用户手动关闭通知不应直接改变网络连接状态；
+     * 2. 只要服务仍处于运行态，就立即补回前台通知，保证持续可见；
+     * 3. 服务停止或停止中时不恢复，避免与用户显式关闭网络意图冲突。
+     */
+    private fun handleNotificationDismissed(action: ServiceAction.NotificationDismissed): ServiceActionResult {
+        val terminalState = stateStore.currentState()
+        val shouldRestoreNotification = when (terminalState.type) {
+            ServiceStateType.STOPPED,
+            ServiceStateType.STOPPING,
+            -> false
+
+            ServiceStateType.STARTING,
+            ServiceStateType.CONNECTING,
+            ServiceStateType.CONNECTED,
+            ServiceStateType.MONITOR_ONLY,
+            ServiceStateType.ERROR,
+            -> true
+        }
+        if (!shouldRestoreNotification) {
+            logChain("通知移除忽略 原因=service_not_running state=${terminalState.type} 触发=${action.reason}")
+            return ServiceActionResult(
+                accepted = true,
+                terminalState = terminalState,
+            )
+        }
+        logChain("通知移除后恢复前台通知 state=${terminalState.type} 触发=${action.reason}")
+        startForegroundNotification()
+        return ServiceActionResult(
+            accepted = true,
+            terminalState = terminalState,
+        )
     }
 
     /**
@@ -1034,6 +1096,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             is ServiceAction.EnterMonitorOnly,
             is ServiceAction.Leave,
             is ServiceAction.Stop,
+            is ServiceAction.NotificationDismissed,
             is ServiceAction.SyncNetworkConfig,
             is ServiceAction.ReconfigureTunnel,
             is ServiceAction.OrbitMoons,
@@ -1078,7 +1141,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     }
 
     private fun logChain(message: String) {
-        Log.i(TAG, "[$LOG_KEY] $message")
+        ChainLog.i(TAG, message)
     }
 
     /**
@@ -1111,6 +1174,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             is ServiceAction.Join -> "加入网络 原因=${action.reason} networkId=${action.params.networkId.value} 显式网络=${action.hasExplicitNetworkId}"
             is ServiceAction.Leave -> "离开网络 原因=${action.reason} networkId=${action.networkId.value}"
             is ServiceAction.Stop -> "停止服务 原因=${action.reason} 保活=${action.keepServiceAlive}"
+            is ServiceAction.NotificationDismissed -> "通知移除回调 原因=${action.reason}"
             is ServiceAction.EnterMonitorOnly -> "进入仅监听 原因=${action.reason} networkId=${action.networkId?.value ?: "none"}"
             is ServiceAction.ResumeRelay -> "恢复转发 原因=${action.reason}"
             is ServiceAction.SyncNetworkConfig ->
@@ -1126,7 +1190,6 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
     companion object {
         private const val TAG = "ZeroTierVpnService"
-        const val LOG_KEY: String = "ZTL_CHAIN"
 
         /** 包名格式校验器。 */
         private val PACKAGE_NAME_REGEX = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
@@ -1142,6 +1205,9 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
         /** 完全停止服务及所有网络。 */
         const val ACTION_STOP: String = "io.github.jimmy.ztlink.action.STOP"
+
+        /** 用户移除前台通知。 */
+        const val ACTION_NOTIFICATION_DISMISSED: String = "io.github.jimmy.ztlink.action.NOTIFICATION_DISMISSED"
 
         /** 进入仅监控模式。 */
         const val ACTION_ENTER_MONITOR_ONLY: String = "io.github.jimmy.ztlink.action.ENTER_MONITOR_ONLY"
@@ -1274,6 +1340,12 @@ private fun Intent.toServiceAction(): ServiceAction? {
             ServiceAction.Stop(
                 keepServiceAlive = getBooleanExtra(ZeroTierVpnService.EXTRA_KEEP_SERVICE_ALIVE, false),
                 reason = getStringExtra(ZeroTierVpnService.EXTRA_REASON) ?: "manual_stop",
+            )
+        }
+
+        ZeroTierVpnService.ACTION_NOTIFICATION_DISMISSED -> {
+            ServiceAction.NotificationDismissed(
+                reason = getStringExtra(ZeroTierVpnService.EXTRA_REASON) ?: "notification_dismissed",
             )
         }
 

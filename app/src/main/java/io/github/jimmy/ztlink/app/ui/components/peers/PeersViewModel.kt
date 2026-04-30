@@ -86,6 +86,9 @@ class PeersViewModel @Inject constructor(
      * 2) 再做两次短间隔补刷，覆盖连接初期 peers 尚未完全建立的窗口。
      */
     fun onScreenStarted() {
+        if (!_uiState.value.serviceStateType.canQueryPeers()) {
+            return
+        }
         val activeNetworkId = _uiState.value.activeNetworkId ?: return
         val now = System.currentTimeMillis()
         val sameNetworkRapidRestart =
@@ -136,12 +139,12 @@ class PeersViewModel @Inject constructor(
         viewModelScope.launch {
             serviceStateStore.state.collectLatest { state ->
                 val activeNetworkId = when (state.type) {
-                    ServiceStateType.STARTING,
-                    ServiceStateType.CONNECTING,
                     ServiceStateType.CONNECTED,
-                    ServiceStateType.MONITOR_ONLY,
                     -> state.networkId?.value
 
+                    ServiceStateType.STARTING,
+                    ServiceStateType.CONNECTING,
+                    ServiceStateType.MONITOR_ONLY,
                     ServiceStateType.STOPPED,
                     ServiceStateType.STOPPING,
                     ServiceStateType.ERROR,
@@ -182,7 +185,7 @@ class PeersViewModel @Inject constructor(
                 }
 
                 val shouldAutoRefresh =
-                    state.type in setOf(ServiceStateType.CONNECTED, ServiceStateType.MONITOR_ONLY) &&
+                    state.type.canQueryPeers() &&
                         activeNetworkId != lastQueriedNetworkId
                 if (shouldAutoRefresh) {
                     requestPeerSnapshot(
@@ -249,6 +252,18 @@ class PeersViewModel @Inject constructor(
             }
             return
         }
+        if (!_uiState.value.serviceStateType.canQueryPeers()) {
+            _uiState.update { old ->
+                old.copy(
+                    isLoading = false,
+                    isRefreshing = false,
+                )
+            }
+            if (userInitiated) {
+                emitToast(R.string.peers_refresh_requires_active_network)
+            }
+            return
+        }
         if (queryInFlight) {
             return
         }
@@ -295,6 +310,10 @@ class PeersViewModel @Inject constructor(
         private const val NON_USER_QUERY_MIN_INTERVAL_MS: Long = 1_200L
         private const val SCREEN_START_DEBOUNCE_MS: Long = 2_500L
     }
+}
+
+private fun ServiceStateType.canQueryPeers(): Boolean {
+    return this == ServiceStateType.CONNECTED
 }
 
 private fun List<RuntimePeerInfo>.toPeerListItems(): List<PeerListItem> {

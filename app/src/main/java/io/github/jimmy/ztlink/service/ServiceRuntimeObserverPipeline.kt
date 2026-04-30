@@ -18,16 +18,33 @@ class ServiceRuntimeObserverPipeline(
     private val networkController: ServiceNetworkController,
 ) {
 
-    /** 启动全部观察控制器。 */
+    /**
+     * 启动基础观察控制器。
+     *
+     * 说明：
+     * - 状态和流量观察始终需要运行；
+     * - 内核配置回调始终需要运行；
+     * - 网络切换监听由业务开关决定，单独控制启停。
+     */
     fun start() {
         stateController.start()
         trafficController.start()
-        networkController.start()
+        networkController.startRuntimeConfigCallback()
+    }
+
+    /** 启动网络切换监听。 */
+    fun startNetworkObserver() {
+        networkController.startNetworkObserver()
+    }
+
+    /** 停止网络切换监听。 */
+    fun stopNetworkObserver() {
+        networkController.stopNetworkObserver()
     }
 
     /** 停止全部观察控制器。 */
     fun stop() {
-        networkController.stop()
+        networkController.stopAll()
         trafficController.stop()
         stateController.stop()
     }

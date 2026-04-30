@@ -106,7 +106,9 @@
     <string name="settings_item_auto_route_check">自动路由探测</string>
     <string name="settings_item_auto_route_check_summary">在启用 ZeroTier 路由转发前先检测内网状态。</string>
     <string name="settings_item_probe_ip">内网探测 IP</string>
+    <string name="settings_item_probe_ip_summary">用于判断当前 Wi-Fi 是否与该 IP 处于同一内网网段。</string>
     <string name="settings_item_probe_ip_hint">例如：192.168.1.1</string>
+    <string name="settings_item_probe_ip_invalid">请输入有效的 IPv4 地址。</string>
     <string name="settings_item_use_cellular_data">允许蜂窝数据</string>
     <string name="settings_item_use_cellular_data_summary">允许在移动网络下建立服务连接。</string>
     <string name="settings_item_disable_ipv6">禁用 IPv6</string>
@@ -127,30 +129,13 @@
     <string name="accent_lime_mint">青柠薄荷</string>
     <string name="accent_vibrant_purple">活力紫</string>
 
-    <string name="settings_wifi_picker_title">选择内网 WiFi</string>
-    <string name="settings_wifi_picker_summary">连接到该 WiFi 时将使用内网路由</string>
-    <string name="settings_wifi_picker_connected">当前已连接</string>
-    <string name="settings_wifi_picker_no_permission">需要授予 WiFi 相关权限才能扫描列表</string>
-    <string name="settings_wifi_picker_grant">授权</string>
-    <string name="settings_wifi_picker_manual_label">WiFi 名称</string>
-
-    <string name="settings_item_probe_wifi_ssid">内网 Wi-Fi</string>
-    <string name="settings_item_probe_wifi_ssid_summary">连接到此网络时不经过 ZeroTier 转发</string>
-
     <string name="settings_action_confirm">确认</string>
-    <string name="settings_wifi_picker_no_permission_title">需要权限</string>
-    <string name="settings_wifi_picker_no_permission_body">允许扫描附近 Wi-Fi 后才能显示网络列表</string>
-    <string name="settings_wifi_picker_empty_title">未找到网络</string>
-    <string name="settings_wifi_picker_empty_body">请确认 Wi-Fi 已开启后重试</string>
     <string name="settings_planet_source_file_hint">点击从本地选择 planet 文件</string>
     <string name="settings_planet_import_error_cannot_read_source">无法读取所选文件，请重新选择并授权访问权限。</string>
     <string name="settings_planet_import_error_invalid_url">URL 格式不正确。</string>
     <string name="settings_planet_import_error_download_failed">下载 planet 文件失败，请检查网络和 URL。</string>
     <string name="settings_planet_import_error_invalid_file">所选文件不是合法的 planet 文件。</string>
     <string name="settings_planet_import_error_write_failed">保存 planet 文件到应用目录失败。</string>
-
-    <string name="settings_wifi_picker_location_off_title">请开启定位服务</string>
-    <string name="settings_wifi_picker_location_off_body">已授予权限，但系统定位开关关闭时无法扫描 Wi-Fi 列表</string>
 
     <string name="boot_service_notification_channel_name">开机自启动</string>
     <string name="boot_service_notification_channel_desc">设备启动后拉起 ZeroTier 服务</string>
@@ -189,6 +174,12 @@
     <string name="network_action_failed">网络操作失败</string>
     <string name="network_vpn_permission_required">开启网络前需要先完成系统 VPN 授权。</string>
     <string name="network_only_one_active">同一时间只能启用一个网络。</string>
+    <string name="network_intranet_confirm_title">你已开启自动路由功能</string>
+    <string name="network_intranet_confirm_summary">是否将当前 Wi-Fi 识别为内网环境？确认后会自动记录当前 IP 网段。</string>
+    <string name="network_intranet_confirm_detected_ip">当前 Wi-Fi IP：%1$s</string>
+    <string name="network_intranet_confirm_detected_ip_unknown">当前无法读取 Wi-Fi IP。</string>
+    <string name="network_intranet_confirm_yes">是，记录后继续</string>
+    <string name="network_intranet_confirm_no">否，不记录直接继续</string>
     <string name="network_delete">删除网络</string>
     <string name="network_lan">内网</string>
     <string name="network_p2p_summary_direct_only">%1$d 直连</string>

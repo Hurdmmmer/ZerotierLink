@@ -19,6 +19,7 @@ import io.github.jimmy.ztlink.data.settings.SettingsStateHolder
 import io.github.jimmy.ztlink.service.runtime.kernel.KernelTunTapBridge
 import io.github.jimmy.ztlink.service.runtime.kernel.KernelUdpBridge
 import io.github.jimmy.ztlink.service.runtime.kernel.NodeKernelRuntimeCore
+import io.github.jimmy.ztlink.util.ChainLog
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -128,7 +129,11 @@ class RuntimeContext @Inject constructor(
         }
 
         override fun onTrace(message: String) {
-            Log.d(TAG, "Node trace: $message")
+            // Node trace 日志量极大，长期开启会造成明显 I/O 与发热。
+            // 默认关闭，仅在排障时临时打开。
+            if (NODE_TRACE_LOG_ENABLED) {
+                Log.d(TAG, "Node trace: $message")
+            }
         }
     }
 
@@ -453,9 +458,9 @@ class RuntimeContext @Inject constructor(
         if (result != ResultCode.RESULT_OK && result != ResultCode.RESULT_OK_IGNORED) {
             Log.w(TAG, "ARP reply send failed. result=$result")
         } else {
-            Log.i(
+            ChainLog.i(
                 TAG,
-                "[$LOG_KEY] ARP应答已发送 networkId=$networkId target=${ipv4ToString(arp.senderIpv4)} mac=${macToString(srcMac)}",
+                "ARP应答已发送 networkId=$networkId target=${ipv4ToString(arp.senderIpv4)} mac=${macToString(srcMac)}",
             )
         }
     }
@@ -478,9 +483,9 @@ class RuntimeContext @Inject constructor(
             val table = ipv4MacTable.getOrPut(networkId) { mutableMapOf() }
             val previous = table.put(ipv4, mac)
             if (previous == null || previous != mac) {
-                Log.d(
+                ChainLog.d(
                     TAG,
-                    "[$LOG_KEY] 记录IPv4邻居映射 networkId=$networkId ip=${ipv4ToString(ipv4)} mac=${macToString(mac)}",
+                    "记录IPv4邻居映射 networkId=$networkId ip=${ipv4ToString(ipv4)} mac=${macToString(mac)}",
                 )
             }
         }
@@ -748,7 +753,6 @@ class RuntimeContext @Inject constructor(
     private companion object {
         /** 日志标签。 */
         private const val TAG = "RuntimeContext"
-        private const val LOG_KEY = "ZTL_CHAIN"
 
         /** 异常重试等待时长。 */
         private const val ERROR_RETRY_DELAY_MS = 500L
@@ -777,6 +781,9 @@ class RuntimeContext @Inject constructor(
 
         /** MAC 长度。 */
         private const val MAC_LENGTH_BYTES = 6
+
+        /** 是否开启 Node trace 原始日志。 */
+        private const val NODE_TRACE_LOG_ENABLED = false
     }
 
     /**
@@ -809,14 +816,14 @@ private class NodeDataStore(
         val useCustomPlanet = settingsStateHolder.currentState().planetUseCustom
         if (shouldBypassLocalCacheInOfficialMode(name, useCustomPlanet)) {
             if (name == PlanetFileStore.FILE_PLANET) {
-                Log.i(
+                ChainLog.i(
                     DATA_STORE_TAG,
-                    "[$LOG_KEY] Planet数据源=OFFICIAL（不读取本地planet文件）",
+                    "Planet数据源=OFFICIAL（不读取本地planet文件）",
                 )
             } else {
-                Log.i(
+                ChainLog.i(
                     DATA_STORE_TAG,
-                    "[$LOG_KEY] 官方链路启动，跳过本地缓存对象 name=$name",
+                    "官方链路启动，跳过本地缓存对象 name=$name",
                 )
             }
             return -1L
@@ -825,18 +832,18 @@ private class NodeDataStore(
         if (name == PlanetFileStore.FILE_PLANET) {
             val hasCustomPlanetFile = planetFileStore.hasCustomPlanetFile()
             if (hasCustomPlanetFile) {
-                Log.i(
+                ChainLog.i(
                     DATA_STORE_TAG,
-                    "[$LOG_KEY] Planet数据源=NON_OFFICIAL",
+                    "Planet数据源=NON_OFFICIAL",
                 )
                 return readDataStoreFile(
                     name = PlanetFileStore.FILE_CUSTOM_PLANET,
                     outBuffer = out_buffer,
                 )
             }
-            Log.w(
+            ChainLog.w(
                 DATA_STORE_TAG,
-                "[$LOG_KEY] Planet数据源=OFFICIAL（自定义已开启但文件不存在）",
+                "Planet数据源=OFFICIAL（自定义已开启但文件不存在）",
             )
             return -1L
         }
@@ -956,7 +963,6 @@ private class NodeDataStore(
     private companion object {
         /** 日志标签。 */
         private const val DATA_STORE_TAG = "NodeDataStore"
-        private const val LOG_KEY = "ZTL_CHAIN"
     }
 }
 
@@ -1072,6 +1078,19 @@ private class NodeTunTapBridge(
     private val onNextBackgroundDeadline: (Long) -> Unit,
 ) : KernelTunTapBridge() {
 
+    /**
+     * ARP 请求节流表（targetIpv4 -> lastRequestAtMs）。
+     *
+     * 说明：
+     * 1. 当邻居未解析成功时，原逻辑会对每个待转发包都发 ARP；
+     * 2. 这会在高流量场景造成 CPU/日志 I/O 持续升高，导致发热；
+     * 3. 节流后同一目标在窗口内仅发一次 ARP，不影响最终连通语义。
+     */
+    private val arpRequestLastSentAtMs: MutableMap<Int, Long> = mutableMapOf()
+
+    /** 最近一次 ARP 采样日志时间。 */
+    private var lastArpTraceAtMs: Long = 0L
+
     /** 桥接线程。 */
     private val workerThread: Thread = Thread(
         {
@@ -1152,6 +1171,8 @@ private class NodeTunTapBridge(
             onTxBytes(length.toLong())
             val nextDeadline = longArrayOf(0L)
             if (destMac != null) {
+                // 邻居已命中，清理该目标的 ARP 节流状态，避免后续切换时误抑制首个 ARP。
+                arpRequestLastSentAtMs.remove(forwardedTargetIpv4)
                 val result = runtime.processVirtualNetworkFrame(
                     now = System.currentTimeMillis(),
                     networkId = networkId,
@@ -1168,11 +1189,15 @@ private class NodeTunTapBridge(
                 }
                 continue
             }
+            val nowMs = System.currentTimeMillis()
+            if (!shouldSendArpRequest(forwardedTargetIpv4, nowMs)) {
+                continue
+            }
 
             val localIpv4 = localIpv4WithPrefix.first
             val arpRequest = buildArpRequestPayload(localMac, localIpv4, forwardedTargetIpv4)
             val arpResult = runtime.processVirtualNetworkFrame(
-                now = System.currentTimeMillis(),
+                now = nowMs,
                 networkId = networkId,
                 sourceMac = localMac,
                 destMac = BROADCAST_MAC,
@@ -1185,12 +1210,42 @@ private class NodeTunTapBridge(
             if (arpResult != ResultCode.RESULT_OK && arpResult != ResultCode.RESULT_OK_IGNORED) {
                 Log.w(TAG, "send ARP request failed result=$arpResult")
             } else {
-                Log.i(
-                    TAG,
-                    "[$LOG_KEY] 发送ARP请求 networkId=$networkId targetIpv4=${ipv4ToString(forwardedTargetIpv4)} 原始目标=${ipv4ToString(destIpv4)}",
-                )
+                traceArpSample(forwardedTargetIpv4, destIpv4, nowMs)
             }
         }
+    }
+
+    /**
+     * 判断当前是否允许发送 ARP 请求。
+     */
+    private fun shouldSendArpRequest(
+        targetIpv4: Int,
+        nowMs: Long,
+    ): Boolean {
+        val lastSentAtMs = arpRequestLastSentAtMs[targetIpv4]
+        if (lastSentAtMs != null && (nowMs - lastSentAtMs) < ARP_REQUEST_THROTTLE_WINDOW_MS) {
+            return false
+        }
+        arpRequestLastSentAtMs[targetIpv4] = nowMs
+        return true
+    }
+
+    /**
+     * ARP 发送采样日志（避免每次都写日志造成 I/O 压力）。
+     */
+    private fun traceArpSample(
+        forwardedTargetIpv4: Int,
+        originalDestIpv4: Int,
+        nowMs: Long,
+    ) {
+        if (nowMs - lastArpTraceAtMs < ARP_TRACE_SAMPLE_INTERVAL_MS) {
+            return
+        }
+        lastArpTraceAtMs = nowMs
+        ChainLog.d(
+            TAG,
+            "发送ARP请求 networkId=$networkId targetIpv4=${ipv4ToString(forwardedTargetIpv4)} 原始目标=${ipv4ToString(originalDestIpv4)}",
+        )
     }
 
     /**
@@ -1314,7 +1369,6 @@ private class NodeTunTapBridge(
     private companion object {
         /** 日志标签。 */
         private const val TAG = "NodeTunTapBridge"
-        private const val LOG_KEY = "ZTL_CHAIN"
 
         /** 以太类型：ARP。 */
         private const val ETHER_TYPE_ARP = 0x0806
@@ -1329,6 +1383,12 @@ private class NodeTunTapBridge(
 
         /** 广播 MAC。 */
         private const val BROADCAST_MAC = 0xFFFF_FFFF_FFFFL
+
+        /** 同一目标 ARP 请求节流窗口。 */
+        private const val ARP_REQUEST_THROTTLE_WINDOW_MS = 1_500L
+
+        /** ARP 日志采样窗口。 */
+        private const val ARP_TRACE_SAMPLE_INTERVAL_MS = 2_000L
 
         /** TUN 帧最大长度。 */
         private const val MAX_TUN_FRAME_SIZE = 32 * 1024

@@ -18,6 +18,8 @@ import kotlin.text.Regex
 
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.CommonUiEvent
+import java.net.Inet4Address
+import java.net.InetAddress
 
 /**
  * 设置页一次性 UI 事件。
@@ -124,7 +126,7 @@ class SettingsViewModel @Inject constructor(
                 it.copy(planetUseCustom = true)
             } else {
                 // 关键逻辑：
-                // 关闭自定义 Planet 仅代表“整套内网 SSID 探测策略暂时失效”，
+                // 关闭自定义 Planet 仅代表“整套内网探测策略暂时失效”，
                 // 不应改写 auto route check 的用户选择值。
                 // auto route 开关状态只允许用户主动点击修改。
                 it.copy(
@@ -145,49 +147,34 @@ class SettingsViewModel @Inject constructor(
                 it.copy(planetAutoRouteCheck = true)
             } else {
                 // 关键逻辑：
-                // 用户主动关闭自动探测时，必须立即清空已选择 SSID，
-                // 保证“开关状态”和“探测目标”一致，不留下隐式启用条件。
                 it.copy(
                     planetAutoRouteCheck = false,
-                    probeWifiSsid = "",
                 )
             }
         }
     }
 
     /**
-     * 修改用于探测内网环境的 Wi-Fi SSID。
+     * 修改用于探测内网环境的固定 IP。
      *
-     * @param probeSSID 目标 Wi-Fi SSID。
+     * @param probeIp 目标内网 IP。
      */
-    fun updateProbeWifiSsid(probeSSID: String) {
+    fun updatePlanetIntranetProbeIp(probeIp: String) {
         updateStateAndPersist {
-            val normalizedSsid = probeSSID.trim()
+            val normalizedIp = probeIp.trim()
             if (!it.planetUseCustom) {
-                // 关键逻辑：
-                // SSID 探测仅允许在自定义 Planet 模式下生效。
-                // 若当前已关闭自定义 Planet，任何 SSID 变更请求都统一清空并关闭探测。
-                return@updateStateAndPersist it.copy(
-                    planetAutoRouteCheck = false,
-                    probeWifiSsid = "",
-                )
+                return@updateStateAndPersist it
             }
-
-            if (normalizedSsid.isBlank()) {
-                // 关键逻辑：
-                // 当用户清空 SSID 时，自动探测没有目标，应同步关闭自动探测。
-                it.copy(
-                    planetAutoRouteCheck = false,
-                    probeWifiSsid = "",
-                )
-            } else {
-                // 关键逻辑：
-                // 只要用户选中了 SSID，就强制开启自动探测开关。
-                it.copy(
-                    planetAutoRouteCheck = true,
-                    probeWifiSsid = normalizedSsid,
-                )
+            if (!it.planetAutoRouteCheck) {
+                return@updateStateAndPersist it
             }
+            if (normalizedIp.isBlank()) {
+                return@updateStateAndPersist it.copy(planetIntranetProbeIp = "")
+            }
+            if (!isValidIpv4(normalizedIp)) {
+                return@updateStateAndPersist it
+            }
+            it.copy(planetIntranetProbeIp = normalizedIp)
         }
     }
 
@@ -340,6 +327,11 @@ class SettingsViewModel @Inject constructor(
             .filter { packageRegex.matches(it) }
             .distinct()
             .toList()
+    }
+
+    private fun isValidIpv4(raw: String): Boolean {
+        val address = runCatching { InetAddress.getByName(raw) }.getOrNull() ?: return false
+        return address is Inet4Address && address.hostAddress == raw
     }
 
 }

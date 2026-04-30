@@ -75,10 +75,10 @@ data class SettingsUiState(
     val planetAutoRouteCheck: Boolean = false,
 
     /**
-     * 内网探测WIFI SSID。
+     * 内网探测 IP（用于同网段判定）。
      * 允许为空。
      */
-    val probeWifiSsid: String = "",
+    val planetIntranetProbeIp: String = "",
 
     /**
      * Planet 来源类型（文件 / URL / 未配置）。
@@ -134,7 +134,7 @@ data class SettingsUiState(
      * 探测 IP 输入是否可用。
      * 规则：
      * 1. 仅当启用自定义 Planet 时可编辑；
-     * 2. 必须先开启自动路由探测，才允许点击选择 SSID。
+     * 2. 必须先开启自动路由探测，才允许点击修改内网 IP。
      */
     val planetProbeIpEnabled: Boolean
         get() = planetUseCustom && planetAutoRouteCheck

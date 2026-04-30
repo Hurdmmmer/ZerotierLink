@@ -3,17 +3,15 @@ package io.github.jimmy.ztlink.service.controller
 import com.zerotier.sdk.VirtualNetworkConfig
 import com.zerotier.sdk.VirtualNetworkConfigOperation
 import com.zerotier.sdk.VirtualNetworkStatus
-import android.util.Log
 import io.github.jimmy.ztlink.data.network.NetworkRepository
 import io.github.jimmy.ztlink.model.network.NetworkId
 import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
-import io.github.jimmy.ztlink.service.policy.RoutePolicyCoordinator
+import io.github.jimmy.ztlink.service.policy.RoutePolicyService
 import io.github.jimmy.ztlink.service.runtime.RuntimeContext
 import io.github.jimmy.ztlink.service.ServiceAction
 import io.github.jimmy.ztlink.service.observer.NetworkTransport
+import io.github.jimmy.ztlink.util.ChainLog
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -27,14 +25,17 @@ import kotlinx.coroutines.launch
 class ServiceNetworkController(
     private val serviceScope: CoroutineScope,
     private val networkChangeObserver: NetworkChangeObserver,
-    private val routePolicyCoordinator: RoutePolicyCoordinator,
+    private val routePolicyService: RoutePolicyService,
     private val runtimeContext: RuntimeContext,
     private val dispatchAction: suspend (ServiceAction) -> Unit,
     private val networkRepository: NetworkRepository,
 ) {
 
-    /** 是否已启动。 */
-    private var started: Boolean = false
+    /** 网络切换监听是否已启动。 */
+    private var networkObserverStarted: Boolean = false
+
+    /** 内核网络配置回调是否已注册。 */
+    private var runtimeConfigCallbackStarted: Boolean = false
 
     /**
      * 最近一次已处理的网络配置摘要（按 networkId 维度缓存）。
@@ -49,36 +50,69 @@ class ServiceNetworkController(
     /** 配置摘要缓存锁，保证并发回调下读写一致。 */
     private val configFingerprintLock: Any = Any()
 
-    /** Wi-Fi 切回后 SSID 可能短暂不可读，保留一个复检任务等待系统补齐。 */
-    private var wifiSsidRetryJob: Job? = null
-
     /**
-     * 启动网络观察。
+     * 启动网络切换监听。
+     *
+     * 说明：
+     * 1. 该监听只服务自动路由策略复检；
+     * 2. 与内核配置回调解耦，避免关闭自动路由时误关核心配置回调。
      */
-    fun start() {
-        if (started) {
+    fun startNetworkObserver() {
+        if (networkObserverStarted) {
             return
         }
-        started = true
-        logChain("网络控制器已启动")
+        networkObserverStarted = true
+        logChain("网络切换监听已启动")
         startObserveNetworkChanges()
+    }
+
+    /**
+     * 停止网络切换监听。
+     */
+    fun stopNetworkObserver() {
+        if (!networkObserverStarted) {
+            return
+        }
+        networkObserverStarted = false
+        logChain("网络切换监听已停止")
+        networkChangeObserver.stop()
+    }
+
+    /**
+     * 启动内核网络配置回调监听。
+     *
+     * 说明：
+     * 1. 该回调负责把内核配置变更同步到服务链路；
+     * 2. 必须在 Join/Leave 全流程中始终可用，不能受自动路由开关影响。
+     */
+    fun startRuntimeConfigCallback() {
+        if (runtimeConfigCallbackStarted) {
+            return
+        }
+        runtimeConfigCallbackStarted = true
+        logChain("内核配置回调已启动")
         startObserveRuntimeNetworkConfigUpdates()
     }
 
     /**
-     * 停止网络观察。
+     * 停止内核网络配置回调监听。
      */
-    fun stop() {
-        if (!started) {
+    fun stopRuntimeConfigCallback() {
+        if (!runtimeConfigCallbackStarted) {
             return
         }
-        started = false
-        logChain("网络控制器已停止")
-        wifiSsidRetryJob?.cancel()
-        wifiSsidRetryJob = null
-        networkChangeObserver.stop()
+        runtimeConfigCallbackStarted = false
+        logChain("内核配置回调已停止")
         runtimeContext.setNetworkConfigCallback(null)
         clearAllConfigFingerprints()
+    }
+
+    /**
+     * 停止全部网络相关监听。
+     */
+    fun stopAll() {
+        stopNetworkObserver()
+        stopRuntimeConfigCallback()
     }
 
     /**
@@ -87,32 +121,19 @@ class ServiceNetworkController(
     private fun startObserveNetworkChanges() {
         networkChangeObserver.start { event ->
             logChain("检测到网络变化 原因=${event.reason} from=${event.from} to=${event.to}")
+            val isWifiCellularSwitch =
+                (event.from == NetworkTransport.WIFI && event.to == NetworkTransport.CELLULAR) ||
+                    (event.from == NetworkTransport.CELLULAR && event.to == NetworkTransport.WIFI)
+            if (!isWifiCellularSwitch) {
+                // 只处理 Wi-Fi <-> 蜂窝切换，其余事件全部忽略。
+                return@start
+            }
             serviceScope.launch {
-                routePolicyCoordinator.triggerAutoRoutePolicyCheck(
+                routePolicyService.triggerAutoRoutePolicyCheck(
                     reason = event.reason,
                     observedTransport = event.to,
-                    observedWifiSsid = event.wifiSsid,
-                )
-            }
-            if (event.to == NetworkTransport.WIFI) {
-                scheduleWifiSsidSettleRechecks(event.reason)
-            } else {
-                wifiSsidRetryJob?.cancel()
-                wifiSsidRetryJob = null
-            }
-        }
-    }
-
-    private fun scheduleWifiSsidSettleRechecks(reason: String) {
-        wifiSsidRetryJob?.cancel()
-        wifiSsidRetryJob = serviceScope.launch {
-            WIFI_SSID_SETTLE_RECHECK_DELAYS_MS.forEachIndexed { index, delayMs ->
-                delay(delayMs)
-                logChain("Wi-Fi SSID 稳定复检 原因=$reason 序号=${index + 1} 延迟Ms=$delayMs")
-                routePolicyCoordinator.triggerAutoRoutePolicyCheck(
-                    reason = "${reason}_wifi_ssid_retry_${index + 1}",
-                    observedTransport = NetworkTransport.WIFI,
-                    observedWifiSsid = networkChangeObserver.currentWifiSsid(),
+                    observedWifiIpv4 = event.wifiIpv4,
+                    observedWifiPrefixLength = event.wifiPrefixLength,
                 )
             }
         }
@@ -258,13 +279,11 @@ class ServiceNetworkController(
     }
 
     private fun logChain(message: String) {
-        Log.i(TAG, "[$LOG_KEY] $message")
+        ChainLog.i(TAG, message)
     }
 
     private companion object {
         private const val TAG = "ServiceNetworkController"
-        private const val LOG_KEY = "ZTL_CHAIN"
-        private val WIFI_SSID_SETTLE_RECHECK_DELAYS_MS = longArrayOf(1_000L, 3_000L, 6_000L)
     }
 }
 

@@ -40,8 +40,7 @@ class ServiceStartNetworkGuard @Inject constructor(
         // 第一步：解析当前连接类型。
         // 说明：
         // 1. 优先按 activeNetwork 判定；
-        // 2. 启动瞬时 activeNetwork 为空时，回退扫描 allNetworks；
-        // 3. 回退扫描时优先判定 OTHER（Wi-Fi/以太网），避免误选蜂窝导致误拦截。
+        // 2. 读取失败时视为 NONE，直接拦截并提示无网络。
         val connectionType = resolveCurrentConnection(connectivityManager)
         if (connectionType == CurrentConnection.NONE) {
             return ServiceError(
@@ -74,9 +73,8 @@ class ServiceStartNetworkGuard @Inject constructor(
      * 解析当前连接类型。
      *
      * 说明：
-     * 1. activeNetwork 命中时直接判定；
-     * 2. activeNetwork 缺失时，回退 allNetworks 扫描；
-     * 3. allNetworks 结果按 OTHER > CELLULAR > NONE 优先级归并。
+     * 1. 仅使用 activeNetwork 判定；
+     * 2. 不再使用 allNetworks 回退，避免依赖过时 API。
      */
     private fun resolveCurrentConnection(
         connectivityManager: ConnectivityManager,
@@ -86,24 +84,7 @@ class ServiceStartNetworkGuard @Inject constructor(
             connectivityManager.getNetworkCapabilities(network)
         }
         val activeConnection = activeCapabilities?.toCurrentConnection()
-        if (activeConnection != null) {
-            return activeConnection
-        }
-
-        // 仅在 activeNetwork 不可用时走回退扫描。
-        // allNetworks 在此场景下是必要兜底，属于稳定设计的一部分。
-        @Suppress("DEPRECATION")
-        val fallbackConnections = connectivityManager.allNetworks
-            .asSequence()
-            .mapNotNull { network -> connectivityManager.getNetworkCapabilities(network) }
-            .map { capabilities -> capabilities.toCurrentConnection() }
-            .toList()
-
-        return when {
-            fallbackConnections.any { it == CurrentConnection.OTHER } -> CurrentConnection.OTHER
-            fallbackConnections.any { it == CurrentConnection.CELLULAR } -> CurrentConnection.CELLULAR
-            else -> CurrentConnection.NONE
-        }
+        return activeConnection ?: CurrentConnection.NONE
     }
 }
 

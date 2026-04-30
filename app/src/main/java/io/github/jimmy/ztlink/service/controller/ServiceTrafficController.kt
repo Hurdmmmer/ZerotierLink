@@ -81,16 +81,15 @@ class ServiceTrafficController(
 
     private companion object {
         /** 连接态流量高频刷新间隔。 */
-        private const val ACTIVE_REFRESH_DELAY_MS: Long = 1_500L
+        private const val ACTIVE_REFRESH_DELAY_MS: Long = 3_000L
 
         /** 连接态流量低频刷新间隔。 */
-        private const val IDLE_REFRESH_DELAY_MS: Long = 3_000L
+        private const val IDLE_REFRESH_DELAY_MS: Long = 8_000L
 
         /** 前台未启动时的保守等待间隔。 */
-        private const val BACKGROUND_REFRESH_DELAY_MS: Long = 10_000L
+        private const val BACKGROUND_REFRESH_DELAY_MS: Long = 30_000L
 
         /** 灭屏后不刷新可视流量通知，降低后台唤醒。 */
-        private const val SCREEN_OFF_REFRESH_DELAY_MS: Long = 60_000L
+        private const val SCREEN_OFF_REFRESH_DELAY_MS: Long = 120_000L
     }
 }
-

@@ -106,7 +106,9 @@
     <string name="settings_item_auto_route_check">Auto Route Check</string>
     <string name="settings_item_auto_route_check_summary">Detect intranet status before enabling ZeroTier route forwarding.</string>
     <string name="settings_item_probe_ip">Intranet Probe IP</string>
+    <string name="settings_item_probe_ip_summary">Used to detect whether current Wi-Fi is in the same intranet segment.</string>
     <string name="settings_item_probe_ip_hint">e.g. 192.168.1.1</string>
+    <string name="settings_item_probe_ip_invalid">Enter a valid IPv4 address.</string>
     <string name="settings_item_use_cellular_data">Use Cellular Data</string>
     <string name="settings_item_use_cellular_data_summary">Allow service connection on mobile network.</string>
     <string name="settings_item_disable_ipv6">Disable IPv6</string>
@@ -127,23 +129,7 @@
     <string name="accent_lime_mint">Lime Mint</string>
     <string name="accent_vibrant_purple">Vibrant Purple</string>
 
-    <!-- WiFi SSID 选择器 -->
-    <string name="settings_wifi_picker_title">Select LAN Wi-Fi</string>
-    <string name="settings_wifi_picker_summary">Connected to this network, local routing applies</string>
-    <string name="settings_wifi_picker_connected">Connected</string>
-    <string name="settings_wifi_picker_no_permission">Wi-Fi permissions are required to scan networks</string>
-    <string name="settings_wifi_picker_grant">Grant</string>
-    <string name="settings_wifi_picker_manual_label">Wi-Fi Name</string>
-
-    <string name="settings_item_probe_wifi_ssid">Local Network Wi-Fi</string>
-    <string name="settings_item_probe_wifi_ssid_summary">Skip VPN tunnel on this network</string>
-
     <string name="settings_action_confirm">Confirm</string>
-    <string name="settings_wifi_picker_no_permission_title">Permission required</string>
-    <string name="settings_wifi_picker_no_permission_body">Allow nearby Wi-Fi scanning to see available networks</string>
-    <!-- 列表为空 -->
-    <string name="settings_wifi_picker_empty_title">No networks found</string>
-    <string name="settings_wifi_picker_empty_body">Make sure Wi-Fi is enabled and try again</string>
 
     <string name="settings_planet_source_file_hint">Tap to select a local planet file</string>
     <string name="settings_planet_import_error_cannot_read_source">Cannot read selected file. Please re-select and grant access.</string>
@@ -151,9 +137,6 @@
     <string name="settings_planet_import_error_download_failed">Failed to download planet file. Please check network and URL.</string>
     <string name="settings_planet_import_error_invalid_file">Selected file is not a valid planet file.</string>
     <string name="settings_planet_import_error_write_failed">Failed to save planet file to app storage.</string>
-
-    <string name="settings_wifi_picker_location_off_title">Turn on Location Services</string>
-    <string name="settings_wifi_picker_location_off_body">Permissions are granted, but Wi-Fi scan results are unavailable when system location is off</string>
 
     <string name="boot_service_notification_channel_name">Boot Auto Start</string>
     <string name="boot_service_notification_channel_desc">Starts ZeroTier service after device boot</string>
@@ -194,6 +177,12 @@
     <string name="network_action_failed">Network operation failed</string>
     <string name="network_vpn_permission_required">System VPN permission is required before enabling network.</string>
     <string name="network_only_one_active">Only one network can be active at a time.</string>
+    <string name="network_intranet_confirm_title">Auto Route Is Enabled</string>
+    <string name="network_intranet_confirm_summary">Do you want to mark current Wi-Fi as intranet and remember its IP segment?</string>
+    <string name="network_intranet_confirm_detected_ip">Current Wi-Fi IP: %1$s</string>
+    <string name="network_intranet_confirm_detected_ip_unknown">Current Wi-Fi IP is unavailable.</string>
+    <string name="network_intranet_confirm_yes">Yes, remember and continue</string>
+    <string name="network_intranet_confirm_no">No, continue without saving</string>
     <string name="network_delete">Delete network</string>
     <string name="network_lan">LAN</string>
     <string name="network_p2p_summary_direct_only">%1$d direct</string>

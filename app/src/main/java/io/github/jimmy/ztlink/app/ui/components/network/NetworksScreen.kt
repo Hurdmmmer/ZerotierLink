@@ -30,12 +30,17 @@ import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +78,7 @@ fun NetworksScreen(
     val nodeId = ""      // ViewModel 提供
     val appVersion = "1.0.0"
     var pendingEnableNetworkId by remember { mutableStateOf<String?>(null) }
+    var intranetConfirmEvent by remember { mutableStateOf<NetworksUiEvent.ConfirmIntranetEnvironment?>(null) }
 
     // 与老项目保持一致：
     // 点击开启时先走系统 VPN 授权，授权通过后再真正派发 Join。
@@ -92,7 +98,11 @@ fun NetworksScreen(
         viewModel.requestEnableNetwork(networkId)
     }
 
-    ObserveUiEvents(viewModel.uiEvents)
+    ObserveUiEvents(viewModel.uiEvents) { event ->
+        if (event is NetworksUiEvent.ConfirmIntranetEnvironment) {
+            intranetConfirmEvent = event
+        }
+    }
 
     val dimen = ZtTheme.dimen
 
@@ -243,6 +253,29 @@ fun NetworksScreen(
             }
         }
     }
+
+    intranetConfirmEvent?.let { event ->
+        IntranetEnvironmentConfirmSheet(
+            currentWifiIpv4 = event.currentWifiIpv4,
+            onDismiss = { intranetConfirmEvent = null },
+            onConfirmRemember = {
+                intranetConfirmEvent = null
+                viewModel.confirmIntranetPromptAndEnable(
+                    networkId = event.networkId,
+                    rememberCurrentIp = true,
+                    currentWifiIpv4 = event.currentWifiIpv4,
+                )
+            },
+            onConfirmSkip = {
+                intranetConfirmEvent = null
+                viewModel.confirmIntranetPromptAndEnable(
+                    networkId = event.networkId,
+                    rememberCurrentIp = false,
+                    currentWifiIpv4 = null,
+                )
+            },
+        )
+    }
 }
 
 // ── 空态 & 底部状态 ───────────────────────────────────────────────────────
@@ -288,6 +321,67 @@ private fun EmptyNetworkHint(
             )
             Spacer(Modifier.width(dimen.space8))
             Text(stringResource(R.string.network_join))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun IntranetEnvironmentConfirmSheet(
+    currentWifiIpv4: String?,
+    onDismiss: () -> Unit,
+    onConfirmRemember: () -> Unit,
+    onConfirmSkip: () -> Unit,
+) {
+    val dimen = ZtTheme.dimen
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = dimen.space24, vertical = dimen.space16),
+            verticalArrangement = Arrangement.spacedBy(dimen.space12),
+        ) {
+            Text(
+                text = stringResource(R.string.network_intranet_confirm_title),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(R.string.network_intranet_confirm_summary),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = if (currentWifiIpv4.isNullOrBlank()) {
+                    stringResource(R.string.network_intranet_confirm_detected_ip_unknown)
+                } else {
+                    stringResource(R.string.network_intranet_confirm_detected_ip, currentWifiIpv4)
+                },
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onConfirmSkip) {
+                    Text(stringResource(R.string.network_intranet_confirm_no))
+                }
+                Spacer(Modifier.width(dimen.space8))
+                FilledTonalButton(
+                    onClick = onConfirmRemember,
+                    enabled = !currentWifiIpv4.isNullOrBlank(),
+                ) {
+                    Text(stringResource(R.string.network_intranet_confirm_yes))
+                }
+            }
         }
     }
 }

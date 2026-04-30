@@ -26,8 +26,8 @@ object SettingsKeys {
     const val PLANET_USE_CUSTOM = "planet_use_custom"
     /** 是否启用自动路由探测。 */
     const val PLANET_AUTO_ROUTE_CHECK = "planet_auto_route_check"
-    /** 用于探测内网环境的 Wi-Fi SSID。 */
-    const val PLANET_PROBE_WIFI_SSID = "planet_probe_wifi_ssid"
+    /** 用于探测内网环境的固定 IP。 */
+    const val PLANET_INTRANET_PROBE_IP = "planet_intranet_probe_ip"
     /** planet 来源类型。 */
     const val PLANET_SOURCE_TYPE = "planet_source_type"
     /** planet 来源展示值（文件名或 URL）。 */

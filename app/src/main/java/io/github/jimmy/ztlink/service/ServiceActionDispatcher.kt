@@ -3,8 +3,8 @@ package io.github.jimmy.ztlink.service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.github.jimmy.ztlink.util.ChainLog
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -78,6 +78,13 @@ class ServiceActionDispatcher @Inject constructor(
                 Intent(context, ZeroTierVpnService::class.java).apply {
                     action = ZeroTierVpnService.ACTION_STOP
                     putExtra(ZeroTierVpnService.EXTRA_KEEP_SERVICE_ALIVE, keepServiceAlive)
+                    putExtra(ZeroTierVpnService.EXTRA_REASON, reason)
+                }
+            }
+
+            is ServiceAction.NotificationDismissed -> {
+                Intent(context, ZeroTierVpnService::class.java).apply {
+                    action = ZeroTierVpnService.ACTION_NOTIFICATION_DISMISSED
                     putExtra(ZeroTierVpnService.EXTRA_REASON, reason)
                 }
             }
@@ -182,12 +189,11 @@ class ServiceActionDispatcher @Inject constructor(
     }
 
     private fun logChain(message: String) {
-        Log.i(TAG, "[$LOG_KEY] $message")
+        ChainLog.i(TAG, message)
     }
 
     private companion object {
         private const val TAG = "ServiceActionDispatcher"
-        private const val LOG_KEY = "ZTL_CHAIN"
     }
 }
 

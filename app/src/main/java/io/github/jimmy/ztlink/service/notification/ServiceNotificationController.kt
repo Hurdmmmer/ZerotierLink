@@ -7,12 +7,13 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.MainActivity
+import io.github.jimmy.ztlink.service.ZeroTierVpnService
+import io.github.jimmy.ztlink.util.ChainLog
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -291,7 +292,7 @@ class ServiceNotificationController @Inject constructor(
     }
 
     private fun logChain(message: String) {
-        Log.i(TAG, "[$LOG_KEY] $message")
+        ChainLog.i(TAG, message)
     }
 
     /**
@@ -334,6 +335,16 @@ class ServiceNotificationController @Inject constructor(
             openAppIntent,
             pendingIntentFlag,
         )
+        val notificationDeleteIntent = Intent(context, ZeroTierVpnService::class.java).apply {
+            action = ZeroTierVpnService.ACTION_NOTIFICATION_DISMISSED
+            putExtra(ZeroTierVpnService.EXTRA_REASON, "user_dismissed_notification")
+        }
+        val deletePendingIntent = PendingIntent.getService(
+            context,
+            DELETE_INTENT_REQUEST_CODE,
+            notificationDeleteIntent,
+            pendingIntentFlag,
+        )
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setColor(ContextCompat.getColor(context, android.R.color.holo_orange_light))
@@ -342,6 +353,7 @@ class ServiceNotificationController @Inject constructor(
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(pendingIntent)
+            .setDeleteIntent(deletePendingIntent)
     }
 
     /**
@@ -385,7 +397,6 @@ class ServiceNotificationController @Inject constructor(
 
     companion object {
         private const val TAG: String = "ServiceNotification"
-        private const val LOG_KEY: String = "ZTL_CHAIN"
 
         /** 服务通知渠道 ID。 */
         const val CHANNEL_ID: String = "ztlink_runtime_channel"
@@ -395,6 +406,9 @@ class ServiceNotificationController @Inject constructor(
 
         /** 默认流量文案。 */
         private const val DEFAULT_TRAFFIC_TEXT: String = "↑0.0KB/s ↓0.0KB/s"
+
+        /** 删除通知回调请求码。 */
+        private const val DELETE_INTENT_REQUEST_CODE: Int = 2102
     }
 
     /**

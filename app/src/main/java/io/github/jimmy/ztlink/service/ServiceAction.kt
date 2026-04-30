@@ -53,6 +53,13 @@ sealed interface ServiceAction {
     ) : ServiceAction
 
     /**
+     * 用户滑动移除前台通知。
+     */
+    data class NotificationDismissed(
+        override val reason: String = "notification_dismissed",
+    ) : ServiceAction
+
+    /**
      * 进入仅监控模式。
      */
     data class EnterMonitorOnly(

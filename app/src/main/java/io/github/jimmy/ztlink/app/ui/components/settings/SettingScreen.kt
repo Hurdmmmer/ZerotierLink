@@ -34,16 +34,23 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.BasicAlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -65,8 +72,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.components.common.AppTopBar
@@ -80,8 +89,8 @@ import io.github.jimmy.ztlink.app.ui.theme.LocalUpdateTheme
 import io.github.jimmy.ztlink.app.ui.theme.ZerotierLinkShapes
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 import io.github.jimmy.ztlink.app.ui.theme.accentPaletteOf
-import io.github.jimmy.ztlink.app.utils.AppPermissions
-import io.github.jimmy.ztlink.app.utils.rememberPermissionState
+import java.net.Inet4Address
+import java.net.InetAddress
 import kotlinx.coroutines.launch
 
 /**
@@ -119,9 +128,7 @@ fun SettingScreen(
     var showPlanetSourceDialog by rememberSaveable { mutableStateOf(false) }
     val openPlanetFileLauncher = registerFileLauncher(context, settings)
 
-    // 顶部加权限状态和 Sheet 控制
-    val wifiPermission    = rememberPermissionState(AppPermissions.wifiScanPermissions)
-    var showWifiPicker    by rememberSaveable { mutableStateOf(false) }
+    var showIntranetProbeIpDialog by rememberSaveable { mutableStateOf(false) }
 
     val spacing = ZtTheme.dimen
 
@@ -252,26 +259,23 @@ fun SettingScreen(
                             onCheckedChange = settings::togglePlanetAutoRouteCheck,
                         )
 
-                        // Planet 卡片内，替换原来的 OutlinedTextField Box：
                         ItemDivider()
-                        // WiFi SSID 行
                         SettingActionRow(
-                            title         = stringResource(R.string.settings_item_probe_wifi_ssid),
-                            summary       = stringResource(R.string.settings_item_probe_wifi_ssid_summary),
-                            trailingLabel = uiState.probeWifiSsid.ifBlank { null },
+                            title         = stringResource(R.string.settings_item_probe_ip),
+                            summary       = stringResource(R.string.settings_item_probe_ip_summary),
+                            trailingLabel = uiState.planetIntranetProbeIp.ifBlank { null },
                             trailingIcon  = Icons.Outlined.Wifi,
                             enabled       = uiState.planetProbeIpEnabled,
-                            onClick       = { showWifiPicker = true },
+                            onClick       = { showIntranetProbeIpDialog = true },
                         )
-                        // Scaffold 外：
-                        if (showWifiPicker) {
-                            WifiSsidPickerSheet(
-                                currentSsid    = uiState.probeWifiSsid,
-                                wifiPermission = wifiPermission,
-                                onSsidSelected = { ssid ->
-                                    settings.updateProbeWifiSsid(ssid)
+                        if (showIntranetProbeIpDialog) {
+                            IntranetProbeIpDialog(
+                                initialIp = uiState.planetIntranetProbeIp,
+                                onDismiss = { showIntranetProbeIpDialog = false },
+                                onConfirm = { ip ->
+                                    settings.updatePlanetIntranetProbeIp(ip)
+                                    showIntranetProbeIpDialog = false
                                 },
-                                onDismiss = { showWifiPicker = false },
                             )
                         }
                     }
@@ -329,6 +333,92 @@ private fun registerFileLauncher(
 }
 
 // ── 内部辅助组件 ──────────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun IntranetProbeIpDialog(
+    initialIp: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var input by remember(initialIp) { mutableStateOf(initialIp) }
+    val normalizedInput = input.trim()
+    val isInputValid = normalizedInput.isEmpty() || isValidIpv4(normalizedInput)
+    val spacing = ZtTheme.dimen
+
+    BasicAlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = spacing.space20),
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(min = 280.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = spacing.space24, vertical = spacing.space20),
+                verticalArrangement = Arrangement.spacedBy(spacing.space12),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_item_probe_ip),
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(R.string.settings_item_probe_ip_summary),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.settings_item_probe_ip)) },
+                    placeholder = { Text(stringResource(R.string.settings_item_probe_ip_hint)) },
+                    isError = !isInputValid,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = {
+                        if (!isInputValid) {
+                            Text(
+                                text = stringResource(R.string.settings_item_probe_ip_invalid),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text(stringResource(R.string.settings_action_cancel))
+                    }
+                    Spacer(Modifier.width(spacing.space8))
+                    Button(
+                        onClick = { onConfirm(normalizedInput) },
+                        enabled = isInputValid,
+                    ) {
+                        Text(stringResource(R.string.settings_action_confirm))
+                    }
+                }
+            }
+        }
+    }
+}
 
 /**
  * 主题模式三段选择 + 动态取色开关，合并一行。
@@ -616,7 +706,7 @@ private fun SettingSwitchRow(
  *
  * @param title         主标题。
  * @param summary       副标题，trailingLabel 存在时仍显示（两者不互斥）。
- * @param trailingLabel 右侧附加信息（如已选中的 SSID），用 primary 色区分，比 summary 视觉权重高。
+ * @param trailingLabel 右侧附加信息（如已配置的内网 IP），用 primary 色区分，比 summary 视觉权重高。
  * @param enabled       是否可点击。
  * @param onClick       点击回调。
  */
@@ -742,4 +832,9 @@ private fun resolveFileDisplayName(context: Context, uri: Uri): String? {
         }
     }
     return null
+}
+
+private fun isValidIpv4(raw: String): Boolean {
+    val address = runCatching { InetAddress.getByName(raw) }.getOrNull() ?: return false
+    return address is Inet4Address && address.hostAddress == raw
 }

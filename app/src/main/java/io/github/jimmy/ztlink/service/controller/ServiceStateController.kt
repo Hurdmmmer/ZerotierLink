@@ -1,11 +1,11 @@
 package io.github.jimmy.ztlink.service.controller
 
-import android.util.Log
 import io.github.jimmy.ztlink.model.network.NetworkId
 import io.github.jimmy.ztlink.service.notification.ServiceNotificationController
 import io.github.jimmy.ztlink.model.service.ServiceError
 import io.github.jimmy.ztlink.model.service.ServiceState
 import io.github.jimmy.ztlink.model.service.ServiceStateType
+import io.github.jimmy.ztlink.util.ChainLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
@@ -48,6 +48,9 @@ class ServiceStateController(
      */
     private var hasEnteredForeground: Boolean = false
 
+    /** 最近一次已渲染的通知状态签名，用于抑制重复刷新。 */
+    private var lastRenderedStateSignature: String? = null
+
     /**
      * 启动状态观察。
      */
@@ -57,6 +60,11 @@ class ServiceStateController(
         }
         stateJob = serviceScope.launch {
             stateFlow.collectLatest { state ->
+                val stateSignature = buildStateSignature(state)
+                if (stateSignature == lastRenderedStateSignature) {
+                    return@collectLatest
+                }
+                lastRenderedStateSignature = stateSignature
                 logChain(
                     "通知状态同步 type=${state.type} networkId=${state.networkId?.value ?: "none"} reason=${state.reason ?: "none"}",
                 )
@@ -148,14 +156,30 @@ class ServiceStateController(
         stateJob?.cancel()
         stateJob = null
         hasEnteredForeground = false
+        lastRenderedStateSignature = null
+    }
+
+    /**
+     * 生成通知渲染签名。
+     *
+     * 说明：
+     * 1. 仅使用会影响通知显示的关键字段；
+     * 2. 避免同一状态重复触发通知刷新与前台切换。
+     */
+    private fun buildStateSignature(state: ServiceState): String {
+        return buildString {
+            append(state.type.name)
+            append('|').append(state.networkId?.value ?: "none")
+            append('|').append(state.detail ?: "none")
+            append('|').append(state.error?.code?.name ?: "none")
+        }
     }
 
     private fun logChain(message: String) {
-        Log.i(TAG, "[$LOG_KEY] $message")
+        ChainLog.i(TAG, message)
     }
 
     private companion object {
         private const val TAG = "ServiceStateController"
-        private const val LOG_KEY = "ZTL_CHAIN"
     }
 }

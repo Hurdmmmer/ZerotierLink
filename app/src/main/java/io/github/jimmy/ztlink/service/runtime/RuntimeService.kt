@@ -3,7 +3,6 @@ package io.github.jimmy.ztlink.service.runtime
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import com.zerotier.sdk.Peer
 import com.zerotier.sdk.ResultCode
 import com.zerotier.sdk.VirtualNetworkConfig
@@ -30,6 +29,7 @@ import io.github.jimmy.ztlink.service.AppWhitelistApplier
 import io.github.jimmy.ztlink.service.runtime.kernel.KernelRuntimeStartConfig
 import io.github.jimmy.ztlink.service.runtime.kernel.NodeKernelRuntimeCore
 import io.github.jimmy.ztlink.service.runtime.kernel.NodeKernelState
+import io.github.jimmy.ztlink.util.ChainLog
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.Closeable
@@ -224,7 +224,7 @@ class RuntimeService @Inject constructor(
             ).also {
                 runtimeCustomPlanetRef.set(null)
                 logChain("Runtime 启动失败 结果=${it.resultCode} 信息=${it.message}")
-                Log.w(TAG, "[$LOG_KEY] Runtime 启动异常", error)
+                ChainLog.w(TAG, "Runtime 启动异常", error)
             }
         }
     }
@@ -324,7 +324,7 @@ class RuntimeService @Inject constructor(
                 message = serviceError.message,
             ).also {
                 logChain("Runtime 停止失败 结果=${it.resultCode} 信息=${it.message}")
-                Log.w(TAG, "[$LOG_KEY] Runtime 停止异常", error)
+                ChainLog.w(TAG, "Runtime 停止异常", error)
             }
         }
     }
@@ -493,7 +493,7 @@ class RuntimeService @Inject constructor(
                     builder.addRoute(maskAddress(host, prefix), prefix)
                     managedRouteCount += 1
                 }.onFailure {
-                    Log.w(TAG, "[$LOG_KEY] 添加直连路由失败 host=${host.hostAddress}/$prefix", it)
+                    ChainLog.w(TAG, "添加直连路由失败 host=${host.hostAddress}/$prefix", it)
                 }
             }
 
@@ -517,7 +517,7 @@ class RuntimeService @Inject constructor(
                     builder.addRoute(maskAddress(targetAddress, prefix), prefix)
                     managedRouteCount += 1
                 }.onFailure {
-                    Log.w(TAG, "[$LOG_KEY] 添加受管路由失败 target=${targetAddress.hostAddress}/$prefix", it)
+                    ChainLog.w(TAG, "添加受管路由失败 target=${targetAddress.hostAddress}/$prefix", it)
                 }
             }
 
@@ -534,9 +534,9 @@ class RuntimeService @Inject constructor(
             // 第七步：应用 App 白名单/黑名单，决定哪些 App 的流量受此 VPN 影响
             val whitelistApplyResult = appWhitelistApplier.apply(builder, vpnTunnelConfig.toAppWhitelistConfig())
             if (!whitelistApplyResult.isSuccess) {
-                Log.w(
+                ChainLog.w(
                     TAG,
-                    "[$LOG_KEY] 应用白名单部分失败 ignored=${whitelistApplyResult.ignoredPackages.size} failed=${whitelistApplyResult.failedPackages.size}",
+                    "应用白名单部分失败 ignored=${whitelistApplyResult.ignoredPackages.size} failed=${whitelistApplyResult.failedPackages.size}",
                 )
             }
 
@@ -602,7 +602,7 @@ class RuntimeService @Inject constructor(
                 keepConnectingOnTunnelFailure = false,
             ).also {
                 logChain("隧道建立失败 networkId=${vpnTunnelConfig.networkId.value} 结果=${it.resultCode} 信息=${it.message}")
-                Log.w(TAG, "[$LOG_KEY] 隧道建立异常", error)
+                ChainLog.w(TAG, "隧道建立异常", error)
             }
         }
     }
@@ -754,12 +754,12 @@ class RuntimeService @Inject constructor(
                 ),
             )
         }.onFailure {
-            Log.w(TAG, "[$LOG_KEY] 持久化节点身份失败", it)
+            ChainLog.w(TAG, "持久化节点身份失败", it)
         }
     }
 
     private fun logChain(message: String) {
-        Log.i(TAG, "[$LOG_KEY] $message")
+        ChainLog.i(TAG, message)
     }
 
     /**
@@ -1048,7 +1048,6 @@ class RuntimeService @Inject constructor(
     private companion object {
         /** 日志标签。 */
         private const val TAG = "RuntimeService"
-        private const val LOG_KEY = "ZTL_CHAIN"
 
         /** VPN 默认 MTU。 */
         private const val DEFAULT_MTU = 2800

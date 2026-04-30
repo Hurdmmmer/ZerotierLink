@@ -75,7 +75,7 @@ class SettingsStateHolder @Inject constructor(
             if (latestState != rawState) {
                 // 关键逻辑：
                 // 当历史持久化数据不满足当前策略不变式时，刷新阶段立即回写，
-                // 避免后续仍被旧数据污染（例如 auto 关但 SSID 仍有值）。
+                // 避免后续仍被旧数据污染（例如旧版脏值带空白符）。
                 settingsStartupWarmup.updateCachedState(latestState)
                 settingsStore.writeState(latestState)
             }
@@ -179,29 +179,16 @@ class SettingsStateHolder @Inject constructor(
     }
 
     /**
-     * 归一化“内网 SSID 探测”相关状态，保证策略语义一致。
+     * 归一化“内网 IP 探测”相关状态，保证策略语义一致。
      *
      * 关键逻辑：
-     * 1. 自动探测关闭时，必须清空 SSID；
+     * 1. 自动探测关闭时，不清空用户已配置的内网 IP（仅策略失效）；
      * 2. 自定义 Planet 关闭时，策略层会整体禁用探测功能，但不改写 auto 开关值；
-     * 3. SSID 为空时，不强制改写 auto 开关，允许用户先手动开启再去选择 SSID。
+     * 3. 仅做首尾空白归一化。
      */
     private fun normalizeIntranetProbePolicyState(state: SettingsUiState): SettingsUiState {
-        if (!state.planetAutoRouteCheck) {
-            // 关键逻辑：
-            // 只要 auto route check 关闭，就把 SSID 清空，避免残留探测目标。
-            return state.copy(probeWifiSsid = "")
-        }
-
-        val normalizedSsid = state.probeWifiSsid.trim()
-        if (normalizedSsid.isBlank()) {
-            // 关键逻辑：
-            // SSID 为空时保留用户手动开启的 auto 状态，修复“关闭后无法再打开”的问题。
-            return state.copy(probeWifiSsid = "")
-        }
         return state.copy(
-            planetAutoRouteCheck = true,
-            probeWifiSsid = normalizedSsid,
+            planetIntranetProbeIp = state.planetIntranetProbeIp.trim(),
         )
     }
 }

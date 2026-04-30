@@ -1,6 +1,5 @@
 package io.github.jimmy.ztlink.service.runtime.kernel
 
-import android.util.Log
 import android.os.ParcelFileDescriptor
 import com.zerotier.sdk.Node
 import com.zerotier.sdk.NodeStatus
@@ -8,6 +7,7 @@ import com.zerotier.sdk.Peer
 import com.zerotier.sdk.ResultCode
 import com.zerotier.sdk.Version
 import com.zerotier.sdk.VirtualNetworkConfig
+import io.github.jimmy.ztlink.util.ChainLog
 import java.io.Closeable
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -272,11 +272,11 @@ class NodeKernelRuntimeCore (
             if (bridge.isRunning()) {
                 bridge.interrupt()
                 runCatching { bridge.join() }
-                    .onFailure { Log.w(TAG, "[$LOG_KEY] 等待 TunTap 线程退出异常", it) }
+                    .onFailure { ChainLog.w(TAG, "等待 TunTap 线程退出异常", it) }
                 if (bridge.isRunning()) {
-                    Log.w(TAG, "[$LOG_KEY] TunTap 线程超时未退出")
+                    ChainLog.w(TAG, "TunTap 线程超时未退出")
                 }
-                Log.d(TAG, "[$LOG_KEY] TunTap 线程已退出")
+                ChainLog.d(TAG, "TunTap 线程已退出")
             }
         }
 
@@ -341,11 +341,11 @@ class NodeKernelRuntimeCore (
         }
         thread.interrupt()
         runCatching { thread.join() }
-            .onFailure { Log.w(TAG, "[$LOG_KEY] 等待线程退出异常 name=${thread.name}", it) }
+            .onFailure { ChainLog.w(TAG, "等待线程退出异常 name=${thread.name}", it) }
         if (thread.isAlive) {
-            Log.w(TAG, "[$LOG_KEY] 线程超时未退出 name=${thread.name}")
+            ChainLog.w(TAG, "线程超时未退出 name=${thread.name}")
         }
-        Log.d(TAG, "[$LOG_KEY] 线程已退出 name=${thread.name}")
+        ChainLog.d(TAG, "线程已退出 name=${thread.name}")
     }
 
     /**
@@ -364,7 +364,6 @@ class NodeKernelRuntimeCore (
 
     companion object {
         private const val TAG = "NodeKernelRuntimeCore"
-        private const val LOG_KEY = "ZTL_CHAIN"
 
         /** Node 内核 VPN 线程名。 */
         private const val NODE_KERNEL_VPN_THREAD_NAME = "NodeKernel-VpnThread"

@@ -1,7 +1,6 @@
 package io.github.jimmy.ztlink.app.ui.components.network
 
 import android.content.Context
-import android.util.Log
 import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,7 +20,10 @@ import io.github.jimmy.ztlink.model.service.ServiceStateType
 import io.github.jimmy.ztlink.service.ServiceAction
 import io.github.jimmy.ztlink.service.ServiceActionDispatcher
 import io.github.jimmy.ztlink.service.ServiceStateStore
+import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
+import io.github.jimmy.ztlink.service.observer.NetworkTransport
 import io.github.jimmy.ztlink.service.policy.ServiceStartNetworkGuard
+import io.github.jimmy.ztlink.util.ChainLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.net.Inet4Address
@@ -53,6 +55,9 @@ data class NetworksUiState(
     val details: Map<String, NetworkDetail> = emptyMap(),
     val planetRouteType: PlanetRouteType = PlanetRouteType.OFFICIAL,
     val planetRootServerIp: String? = null,
+    val planetUseCustom: Boolean = false,
+    val planetAutoRouteCheck: Boolean = false,
+    val planetIntranetProbeIp: String = "",
     val processingIds: Set<String> = emptySet(),
     val isLoading: Boolean = true,
 )
@@ -87,6 +92,14 @@ sealed interface NetworksUiEvent : CommonUiEvent {
         override val label: String get() = "network-id"
     }
 
+    /**
+     * 开启网络前的内网确认弹窗事件。
+     */
+    data class ConfirmIntranetEnvironment(
+        val networkId: String,
+        val currentWifiIpv4: String?,
+    ) : NetworksUiEvent
+
     /** 导航返回事件。 */
     data object NavigateBack : NetworksUiEvent
 }
@@ -110,12 +123,14 @@ class NetworksViewModel @Inject constructor(
     private val serviceStateStore: ServiceStateStore,
     /** 服务启动前置门禁。 */
     private val startNetworkGuard: ServiceStartNetworkGuard,
+    /** 网络状态观察器。 */
+    private val networkChangeObserver: NetworkChangeObserver,
     /** 设置状态单例持有器。 */
     private val settingsStateHolder: SettingsStateHolder,
 ) : ViewModel() {
 
     /**
-     * 最新网络实体快照。
+     * 最新网络实体状态。
      *
      * 说明：
      * - 网络列表 UI 由“数据库快照 + 运行态开关网络 ID”共同决定；
@@ -150,10 +165,10 @@ class NetworksViewModel @Inject constructor(
      */
     private var activeMonitorOnlyNetworkId: String? = null
 
-    /** Latest peer classification snapshot for the connected network. */
+    /** 当前已连接网络的 Peer 分类状态。 */
     private var peerSnapshot: PeerSnapshot = PeerSnapshot()
 
-    /** Last network id requested for peer snapshot, used to avoid duplicate dispatch. */
+    /** 最近一次请求 Peer 状态的网络 ID，用于避免重复派发。 */
     private var lastPeerQueryNetworkId: String? = null
 
     /** 页面状态流。 */
@@ -288,6 +303,48 @@ class NetworksViewModel @Inject constructor(
      * 3. 仅在派发失败时回退 processing 标记。
      */
     fun requestEnableNetwork(networkId: String) {
+        requestEnableNetworkInternal(
+            networkId = networkId,
+            skipIntranetPrompt = false,
+        )
+    }
+
+    /**
+     * 处理内网确认弹窗后的用户选择。
+     *
+     * @param networkId 网络 ID。
+     * @param rememberCurrentIp 是否记录当前 Wi-Fi IP 作为内网探测 IP。
+     * @param currentWifiIpv4 当前 Wi-Fi IP。
+     */
+    fun confirmIntranetPromptAndEnable(
+        networkId: String,
+        rememberCurrentIp: Boolean,
+        currentWifiIpv4: String?,
+    ) {
+        viewModelScope.launch {
+            if (rememberCurrentIp) {
+                val normalizedIp = currentWifiIpv4?.trim().orEmpty()
+                if (normalizedIp.isNotBlank()) {
+                    settingsStateHolder.updateState { old ->
+                        if (!old.planetUseCustom || !old.planetAutoRouteCheck) {
+                            old
+                        } else {
+                            old.copy(planetIntranetProbeIp = normalizedIp)
+                        }
+                    }
+                }
+            }
+            requestEnableNetworkInternal(
+                networkId = networkId,
+                skipIntranetPrompt = true,
+            )
+        }
+    }
+
+    private fun requestEnableNetworkInternal(
+        networkId: String,
+        skipIntranetPrompt: Boolean,
+    ) {
         viewModelScope.launch {
             toggleMutex.withLock {
                 val parsedId = NetworkId.parse(networkId) ?: return@withLock
@@ -303,6 +360,15 @@ class NetworksViewModel @Inject constructor(
                 }
                 if (hasOtherEnabledNetwork || hasOtherNetworkProcessing) {
                     emitToast(R.string.network_only_one_active)
+                    return@withLock
+                }
+                if (!skipIntranetPrompt && shouldShowIntranetPrompt()) {
+                    _uiEvents.tryEmit(
+                        NetworksUiEvent.ConfirmIntranetEnvironment(
+                            networkId = parsedId.value,
+                            currentWifiIpv4 = networkChangeObserver.currentWifiIpv4Address(),
+                        ),
+                    )
                     return@withLock
                 }
 
@@ -563,10 +629,27 @@ class NetworksViewModel @Inject constructor(
                 _uiState.update { old ->
                     old.copy(
                         planetRouteType = settings.toPlanetRouteType(),
+                        planetUseCustom = settings.planetUseCustom,
+                        planetAutoRouteCheck = settings.planetAutoRouteCheck,
+                        planetIntranetProbeIp = settings.planetIntranetProbeIp,
                     )
                 }
             }
         }
+    }
+
+    private fun shouldShowIntranetPrompt(): Boolean {
+        val state = _uiState.value
+        if (!state.planetUseCustom) {
+            return false
+        }
+        if (!state.planetAutoRouteCheck) {
+            return false
+        }
+        if (state.planetIntranetProbeIp.isNotBlank()) {
+            return false
+        }
+        return networkChangeObserver.currentTransport() == NetworkTransport.WIFI
     }
 
     /**
@@ -714,12 +797,11 @@ class NetworksViewModel @Inject constructor(
     }
 
     private fun logChain(message: String) {
-        Log.i(TAG, "[$LOG_KEY] $message")
+        ChainLog.i(TAG, message)
     }
 
     private companion object {
         private const val TAG = "NetworksViewModel"
-        private const val LOG_KEY = "ZTL_CHAIN"
     }
 }
 

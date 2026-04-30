@@ -1007,3 +1007,32 @@
   - 当前只停可视通知刷新和策略噪声，核心隧道仍保持在线，保证 VPN 功能不被锁屏破坏。
 - 验证结果：
   - `:app:compileDebugKotlin` 通过。
+
+## 10.47 前台通知被滑动移除后自动恢复（2026-04-26）
+- 已完成：
+  - 修复场景：
+    - 用户在网络仍运行时手动滑掉前台通知，通知消失后不会自动恢复，导致“仍在运行”的持续提示丢失。
+  - 根因：
+    - 现有链路仅在服务状态变更时调用 `startForeground/notify`；
+    - 通知被用户移除不触发服务状态变化，因此没有任何补发路径。
+  - 处理：
+    - `ServiceNotificationController` 的基础通知新增 `deleteIntent`，把“用户移除通知”回调到 `ZeroTierVpnService`。
+    - 服务新增 `ACTION_NOTIFICATION_DISMISSED` + `ServiceAction.NotificationDismissed`：
+      - 服务处于运行态（`STARTING/CONNECTING/CONNECTED/MONITOR_ONLY/ERROR`）时立即恢复前台通知；
+      - 服务处于 `STOPPING/STOPPED` 时不恢复，避免与“用户关闭网络”冲突。
+    - `ServiceActionDispatcher` 补齐新动作的 Intent 映射，保持动作模型完整性。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
+
+## 10.56 Peers 页面连接门禁收敛（2026-04-29）
+- 已完成：
+  - 修复场景：
+    - 服务处于 `MONITOR_ONLY` / `STARTING` / `CONNECTING` 时，Peers 页面可能进入持续 loading（转圈不结束）。
+  - 根因：
+    - `PeersViewModel` 把上述状态保留为 `activeNetworkId`，并在网络切换时把 `isLoading` 置为 `true`；
+    - 但 peers 自动查询与前台补刷并未稳定覆盖这些状态，导致 loading 无收敛事件。
+  - 处理：
+    - Peers 查询门禁统一收敛为仅 `CONNECTED` 才允许查询；
+    - 非 `CONNECTED` 状态统一回落为“空数据 + 非 loading”。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。
