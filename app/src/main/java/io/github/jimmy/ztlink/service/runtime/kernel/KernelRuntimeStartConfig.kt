@@ -44,6 +44,5 @@ data class KernelRuntimeStartConfig(
     val udpBridgeFactory: ((DatagramSocket) -> KernelUdpBridge)? = null,
     val tunTapBridgeFactory: ((Long) -> KernelTunTapBridge)? = null,
     val bindPort: Int = 9994,
-    val socketTimeoutMs: Int = 1_000,
+    val socketTimeoutMs: Int = 15_000,
 )
-

@@ -525,6 +525,8 @@ class RuntimeService @Inject constructor(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 builder.setMetered(false) // 标记为非计费流量
             }
+            // 默认 non-blocking 会在空闲时返回 0，导致 TUN 读循环空转耗电。
+            builder.setBlocking(true)
             builder.setMtu(config.mtu.takeIf { it > 0 } ?: DEFAULT_MTU)
             builder.setSession(VPN_SESSION_NAME)
 

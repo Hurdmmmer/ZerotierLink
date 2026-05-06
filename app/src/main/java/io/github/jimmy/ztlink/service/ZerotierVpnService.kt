@@ -1003,7 +1003,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
                 startForeground(
                     ServiceNotificationController.NOTIFICATION_ID,
                     notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
                 )
             } else {
                 startForeground(ServiceNotificationController.NOTIFICATION_ID, notification)
@@ -1015,7 +1015,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             startForeground(
                 ServiceNotificationController.NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
             )
         } else {
             startForeground(ServiceNotificationController.NOTIFICATION_ID, notification)
