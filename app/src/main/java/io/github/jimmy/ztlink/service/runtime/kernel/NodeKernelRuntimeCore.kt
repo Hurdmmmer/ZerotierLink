@@ -271,12 +271,13 @@ class NodeKernelRuntimeCore (
         tunTapBridgeRef?.let { bridge ->
             if (bridge.isRunning()) {
                 bridge.interrupt()
-                runCatching { bridge.join() }
+                runCatching { bridge.join(THREAD_STOP_TIMEOUT_MS) }
                     .onFailure { ChainLog.w(TAG, "等待 TunTap 线程退出异常", it) }
                 if (bridge.isRunning()) {
-                    ChainLog.w(TAG, "TunTap 线程超时未退出")
+                    ChainLog.w(TAG, "TunTap 线程超时未退出 timeout=${THREAD_STOP_TIMEOUT_MS}ms")
+                } else {
+                    ChainLog.d(TAG, "TunTap 线程已退出")
                 }
-                ChainLog.d(TAG, "TunTap 线程已退出")
             }
         }
 
@@ -331,21 +332,23 @@ class NodeKernelRuntimeCore (
     }
 
     /**
-     * 中断并等待线程退出。
+     * 中断并有限时等待线程退出。
      *
      * @param thread 目标线程。
+     * @param timeoutMs 最长等待时间（毫秒）；超时后记录警告并继续，不再无限阻塞。
      */
-    private fun interruptAndJoinThread(thread: Thread?) {
+    private fun interruptAndJoinThread(thread: Thread?, timeoutMs: Long = THREAD_STOP_TIMEOUT_MS) {
         if (thread?.isAlive != true) {
             return
         }
         thread.interrupt()
-        runCatching { thread.join() }
+        runCatching { thread.join(timeoutMs) }
             .onFailure { ChainLog.w(TAG, "等待线程退出异常 name=${thread.name}", it) }
         if (thread.isAlive) {
-            ChainLog.w(TAG, "线程超时未退出 name=${thread.name}")
+            ChainLog.w(TAG, "线程超时未退出 name=${thread.name} timeout=${timeoutMs}ms")
+        } else {
+            ChainLog.d(TAG, "线程已退出 name=${thread.name}")
         }
-        ChainLog.d(TAG, "线程已退出 name=${thread.name}")
     }
 
     /**
@@ -370,6 +373,17 @@ class NodeKernelRuntimeCore (
 
         /** Node 内核 UDP 线程名。 */
         private const val NODE_KERNEL_UDP_THREAD_NAME = "NodeKernel-UdpThread"
+
+        /**
+         * 线程停止等待超时（3 秒）。
+         *
+         * 说明：
+         * - stop() 顺序是先关底层 FD/Socket 再 interrupt+join；
+         *   正常路径下线程应在几十毫秒内退出；
+         * - 为防止极端情况（FD 关闭未解除阻塞、JNI 调用卡住等）
+         *   导致 stop() 永久阻塞，超时后记录警告并继续清理。
+         */
+        private const val THREAD_STOP_TIMEOUT_MS = 3_000L
 
         /**
          * 创建并启动内核运行时。

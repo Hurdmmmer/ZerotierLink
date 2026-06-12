@@ -84,7 +84,17 @@ class NetworkChangeObserver @Inject constructor(
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     /** 最近一次观察到的传输类型。 */
+    @Volatile
     private var lastTransport: NetworkTransport = NetworkTransport.UNKNOWN
+
+    /**
+     * 最近一次向上层派发的 WiFi IPv4 地址（用于检测 DHCP 完成补偿）。
+     *
+     * 说明：onAvailable 先于 DHCP 触发，IP 可能为 null；DHCP 完成后系统
+     * 通过 onLinkPropertiesChanged 通知，此时需要补偿一次策略检查。
+     */
+    @Volatile
+    private var lastDispatchedWifiIpv4: String? = null
 
     /**
      * 启动监听。
@@ -113,14 +123,18 @@ class NetworkChangeObserver @Inject constructor(
         }
         networkCallback = null
         lastTransport = NetworkTransport.UNKNOWN
+        lastDispatchedWifiIpv4 = null
     }
 
     /**
      * 构建系统网络回调。
      *
      * 说明：
-     * - 只要默认网络有变化就触发一次“重新判定是否发生 Wi-Fi/蜂窝切换”；
-     * - 不直接使用回调参数中的 IP，避免把 VPN/TUN 的地址误判为 Wi-Fi IP。
+     * - 只要默认网络有变化就触发一次”重新判定是否发生 Wi-Fi/蜂窝切换”；
+     * - 不直接使用回调参数中的 IP，避免把 VPN/TUN 的地址误判为 Wi-Fi IP；
+     * - onLinkPropertiesChanged 额外用于捕获 DHCP 完成：onAvailable 先于 IP
+     *   分配触发，此时 IP 为 0；IP 分配后系统触发 onLinkPropertiesChanged，
+     *   需要派发补偿事件以触发内网策略重检。
      */
     private fun buildNetworkCallback(listener: NetworkChangeListener): ConnectivityManager.NetworkCallback {
         return object : ConnectivityManager.NetworkCallback() {
@@ -135,11 +149,23 @@ class NetworkChangeObserver @Inject constructor(
             override fun onLost(network: Network) {
                 dispatchIfWifiCellularSwitched(listener)
             }
+
+            override fun onLinkPropertiesChanged(
+                network: Network,
+                linkProperties: android.net.LinkProperties,
+            ) {
+                dispatchIfWifiIpAssigned(listener)
+            }
         }
     }
 
     /**
-     * 仅在 Wi-Fi 与蜂窝互相切换时派发事件。
+     * 在网络接口切换到 Wi-Fi 或蜂窝时派发事件。
+     *
+     * 修复说明：
+     * 原逻辑仅识别"直接 WiFi↔蜂窝"切换，忽略了 Android 切换时常见的
+     * WiFi→NONE→蜂窝（或反向）中间过渡。此处改为：只要当前网络变为
+     * WiFi 或蜂窝（即有真实物理接口可用），就派发事件，让上层重建 UDP Socket。
      */
     private fun dispatchIfWifiCellularSwitched(listener: NetworkChangeListener) {
         val previous = lastTransport
@@ -148,13 +174,11 @@ class NetworkChangeObserver @Inject constructor(
             return
         }
         lastTransport = current
-        val isWifiCellularSwitch =
-            (previous == NetworkTransport.WIFI && current == NetworkTransport.CELLULAR) ||
-                (previous == NetworkTransport.CELLULAR && current == NetworkTransport.WIFI)
-        if (!isWifiCellularSwitch) {
+        if (current != NetworkTransport.WIFI && current != NetworkTransport.CELLULAR) {
             return
         }
         val wifiInfo = if (current == NetworkTransport.WIFI) currentWifiIpv4Info() else null
+        lastDispatchedWifiIpv4 = wifiInfo?.address
         val reason = "${previous.name.lowercase()}_to_${current.name.lowercase()}"
         android.util.Log.d(
             "NetworkChangeObserver",
@@ -167,6 +191,40 @@ class NetworkChangeObserver @Inject constructor(
                 to = current,
                 wifiIpv4 = wifiInfo?.address,
                 wifiPrefixLength = wifiInfo?.prefixLength,
+            ),
+        )
+    }
+
+    /**
+     * DHCP 完成补偿：当 WiFi IP 从无到有时，派发策略补偿事件。
+     *
+     * 说明：
+     * 1. onAvailable 触发时 IP 可能尚未分配（rawIp==0），此时内网策略检查
+     *    无法判断是否命中，需要在 IP 分配后（onLinkPropertiesChanged）补检一次；
+     * 2. 补偿事件 from=WIFI, to=WIFI，用于标记"仅策略重检，不需重建 Socket"；
+     * 3. 若 IP 未改变则忽略，防止 onLinkPropertiesChanged 频繁触发时产生噪声。
+     */
+    private fun dispatchIfWifiIpAssigned(listener: NetworkChangeListener) {
+        if (currentTransport() != NetworkTransport.WIFI) {
+            return
+        }
+        val wifiInfo = currentWifiIpv4Info() ?: return
+        val previousIp = lastDispatchedWifiIpv4
+        if (wifiInfo.address == previousIp) {
+            return
+        }
+        lastDispatchedWifiIpv4 = wifiInfo.address
+        android.util.Log.d(
+            "NetworkChangeObserver",
+            "WiFi IP assigned/changed: prev=$previousIp new=${wifiInfo.address}/${wifiInfo.prefixLength}",
+        )
+        listener.onNetworkChanged(
+            NetworkChangeEvent(
+                reason = "wifi_ip_assigned",
+                from = NetworkTransport.WIFI,
+                to = NetworkTransport.WIFI,
+                wifiIpv4 = wifiInfo.address,
+                wifiPrefixLength = wifiInfo.prefixLength,
             ),
         )
     }

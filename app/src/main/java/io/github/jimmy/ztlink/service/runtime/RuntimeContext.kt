@@ -1026,6 +1026,9 @@ private class NodeUdpBridge(
             } catch (_: SocketTimeoutException) {
                 continue
             } catch (error: Throwable) {
+                // socket 已关闭（stop 流程触发）时不再循环，直接退出线程，
+                // 避免每轮都抛 SocketException 并写 Log.w 造成 CPU 和 logcat 飙升。
+                if (socket.isClosed) break
                 Log.w(TAG, "UDP receive failed", error)
                 continue
             }

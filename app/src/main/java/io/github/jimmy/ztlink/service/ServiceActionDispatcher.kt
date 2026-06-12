@@ -185,6 +185,14 @@ class ServiceActionDispatcher @Inject constructor(
                     putExtra(ZeroTierVpnService.EXTRA_REASON, reason)
                 }
             }
+
+            is ServiceAction.PhysicalNetworkChanged -> {
+                // 物理网络变化为服务内部动作（由网络监听器直接 executeAction），
+                // 不经过 Intent 派发链路，因此不应被转换为 Intent。
+                throw IllegalArgumentException(
+                    "PhysicalNetworkChanged 为服务内部动作，不支持 Intent 派发",
+                )
+            }
         }
     }
 

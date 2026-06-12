@@ -132,7 +132,18 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = intent?.toServiceAction()
+        val action = when {
+            intent == null -> {
+                // START_STICKY 被系统重建时可能收到空 Intent。
+                // 这里不能直接 stopSelf，否则会把“系统重建后的自恢复”链路掐断。
+                ServiceAction.StartOrResume(
+                    targetNetworkId = null,
+                    hasExplicitNetworkId = false,
+                    reason = "sticky_restart",
+                )
+            }
+            else -> intent.toServiceAction()
+        }
         if (action == null) {
             logChain("忽略服务命令 原因=intent_action_unresolved startId=$startId")
             stopSelf(startId)
@@ -225,6 +236,16 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      * 串行执行服务动作。
      */
     private suspend fun executeAction(action: ServiceAction): ServiceActionResult {
+        // Stop/Leave 命令在等待 actionMutex 之前先发出 STOPPING 状态，
+        // 让 UI 立即响应，避免因锁等待导致界面"卡住"的感知。
+        // 仅在服务处于稳定运行态（CONNECTED/MONITOR_ONLY）时才提前发出，
+        // 防止在 CONNECTING/ERROR 等过渡态下引入不必要的状态抖动。
+        if (action is ServiceAction.Stop || action is ServiceAction.Leave) {
+            val cur = stateStore.currentState()
+            if (cur.type == ServiceStateType.CONNECTED || cur.type == ServiceStateType.MONITOR_ONLY) {
+                stateStore.setState(ServiceState.stopping(action.reason))
+            }
+        }
         return actionMutex.withLock {
             logChain("动作开始 ${actionSummary(action)}")
             val result = when (action) {
@@ -240,6 +261,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
                     configChanged = action.configChanged,
                 )
                 is ServiceAction.ReconfigureTunnel -> handleReconfigureTunnel(action)
+                is ServiceAction.PhysicalNetworkChanged -> handlePhysicalNetworkChanged(action)
                 is ServiceAction.OrbitMoons -> handleOrbitMoons(action)
                 is ServiceAction.DeorbitMoons -> handleDeorbitMoons(action)
                 is ServiceAction.QueryPeers -> handleQueryPeers()
@@ -312,13 +334,26 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      * 如果任何步骤失败，会发射相应的失败效果并返回终端失败状态。
      * 成功后会更新网络状态为已连接，并发射成功效果。
      */
-    private suspend fun handleJoin(action: ServiceAction.Join): ServiceActionResult {
+    private suspend fun handleJoin(
+        action: ServiceAction.Join,
+        skipStartPolicyCheck: Boolean = false,
+    ): ServiceActionResult {
         val networkId = action.params.networkId
 
         // 关键逻辑：
         // 启动指令执行时先根据“自动路由探测”开关决定是否启用网络切换监听，
         // 关闭自动路由时不启动监听器，减少不必要唤醒。
         syncNetworkObserverByPolicy()
+
+        // 用户显式手动连接时开启“手动连接保护窗口”：
+        // 窗口内禁止自动策略把会话拉入仅监听模式，避免刚连上就被同网段误判打断。
+        // 物理网络变化触发的纯重连（skipStartPolicyCheck=true）不刷新窗口。
+        if (!skipStartPolicyCheck) {
+            routePolicyService.updateManualProtectionDeadline(
+                hasExplicitNetworkId = action.hasExplicitNetworkId,
+                protectionMs = MANUAL_CONNECT_PROTECTION_MS,
+            )
+        }
 
         // 验证启动/加入环境条件（如网络权限、VPN准备状态等）
         val environmentError = startNetworkGuard.validateStartOrJoin()
@@ -335,14 +370,20 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
         // 启动前策略检查：
         // 若当前命中“内网 IP 网段自动暂停”条件，则直接进入仅监控模式，不启动内核。
-        val currentPolicy = routePolicyService.checkStartPolicy(reason = action.reason,)
-        if (currentPolicy.shouldEnterMonitorOnly) {
-            logChain(
-                "启动策略命中内网，加入链路直接进入仅监听 networkId=${networkId.value} 详情=${currentPolicy.detail}",
-            )
-            return handleEnterMonitorOnly(
-                ServiceAction.EnterMonitorOnly(networkId = networkId, detail = currentPolicy.detail, reason = action.reason,),
-            )
+        //
+        // 注意：物理网络变化触发的重连（skipStartPolicyCheck=true）不在此处做内网判定。
+        // 重建 UDP Socket 的职责只负责“重连”，内网判定唯一由并行的
+        // triggerAutoRoutePolicyCheck 负责，避免外网与家里同网段时被误判进入仅监听。
+        if (!skipStartPolicyCheck) {
+            val currentPolicy = routePolicyService.checkStartPolicy(reason = action.reason,)
+            if (currentPolicy.shouldEnterMonitorOnly) {
+                logChain(
+                    "启动策略命中内网，加入链路直接进入仅监听 networkId=${networkId.value} 详情=${currentPolicy.detail}",
+                )
+                return handleEnterMonitorOnly(
+                    ServiceAction.EnterMonitorOnly(networkId = networkId, detail = currentPolicy.detail, reason = action.reason,),
+                )
+            }
         }
 
         // 进入正常转发链路前，显式清理仅监听标记，避免旧状态残留。
@@ -460,8 +501,9 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      * 处理离开网络动作。
      */
     private suspend fun handleLeave(action: ServiceAction.Leave): ServiceActionResult {
-        // 主动离网时清理仅监听标记，避免后续状态恢复误判。
+        // 主动离网时清理仅监听标记与手动连接保护窗口，避免后续状态恢复误判与窗口残留。
         runtimeService.updateMonitorOnlyMode(false)
+        routePolicyService.clearManualProtectionDeadline()
         val leaveResult = runtimeService.leaveNetwork(action.networkId)
         val leaveNotRunning = leaveResult.resultCode == RuntimeResultCode.NOT_RUNNING
         // 关键逻辑：
@@ -573,6 +615,24 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
                 ),
             )
 
+        // 恢复前先做内网策略复检：
+        // 极端时序下（策略评估 RESUME_RELAY 后网络又切回内网 WiFi），
+        // 此处可避免短暂在内网上建立连接后再进监控模式的状态抖动。
+        val startPolicy = routePolicyService.checkStartPolicy(reason = action.reason)
+        if (startPolicy.shouldEnterMonitorOnly) {
+            logChain(
+                "恢复转发被内网策略拦截 networkId=${activeNetwork.value} 详情=${startPolicy.detail}",
+            )
+            val monitorState = ServiceState.monitorOnly(
+                networkId = activeNetwork,
+                reason = action.reason,
+                detail = startPolicy.detail,
+                enteredAtMs = System.currentTimeMillis(),
+            )
+            stateStore.setState(monitorState)
+            return ServiceActionResult(accepted = true, terminalState = monitorState)
+        }
+
         // 恢复前执行与 Join 一致的门禁检查，避免在蜂窝禁用等场景被自动恢复绕过设置。
         val environmentError = startNetworkGuard.validateStartOrJoin()
         if (environmentError != null) {
@@ -655,8 +715,9 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      * 处理停止动作。
      */
     private suspend fun handleStop(action: ServiceAction.Stop): ServiceActionResult {
-        // 完全停止服务时同步清理仅监听标记。
+        // 完全停止服务时同步清理仅监听标记与手动连接保护窗口，避免窗口跨会话残留。
         runtimeService.updateMonitorOnlyMode(false)
+        routePolicyService.clearManualProtectionDeadline()
         observerPipeline.stopNetworkObserver()
         stateStore.setState(ServiceState.stopping(action.reason))
         val stopResult = runtimeService.stopRuntime(keepServiceAlive = action.keepServiceAlive)
@@ -688,6 +749,70 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         )
         stateStore.emitEffect(effect)
         return terminalSuccess(effect)
+    }
+
+    /**
+     * 处理物理网络变化（WiFi ↔ 蜂窝，或断网恢复）。
+     *
+     * 核心逻辑：
+     * 1. 仅监听模式下由路由策略服务负责恢复，此处跳过；
+     * 2. 转发模式下停止旧 runtime（释放旧 UDP Socket），再重新 Join，
+     *    让 startRuntime 创建新 Socket 并重新 protect，恢复 ZeroTier 连通性。
+     */
+    private suspend fun handlePhysicalNetworkChanged(action: ServiceAction.PhysicalNetworkChanged): ServiceActionResult {
+        val currentState = stateStore.currentState()
+        if (currentState.type == ServiceStateType.STOPPED ||
+            currentState.type == ServiceStateType.STOPPING ||
+            currentState.type == ServiceStateType.ERROR
+        ) {
+            logChain("物理网络变化忽略 原因=service_not_running_or_error state=${currentState.type}")
+            return terminalSuccess(null)
+        }
+
+        val activeNetworkId = currentState.networkId
+            ?: runtimeService.readRuntimeState().activeNetworkId
+            ?: run {
+                logChain("物理网络变化忽略 原因=no_active_network state=${currentState.type}")
+                return terminalSuccess(null)
+            }
+
+        logChain("物理网络变化处理 networkId=${activeNetworkId.value} 状态=${currentState.type} 原因=${action.reason}")
+
+        if (currentState.type == ServiceStateType.MONITOR_ONLY) {
+            // 仅监听模式下 runtime 已停止，由路由策略服务的 triggerAutoRoutePolicyCheck 负责
+            // 决策是否恢复中转，此处仅做日志记录，不主动恢复，避免绕过内网探测策略。
+            logChain("物理网络变化在监听模式下跳过 原因=由策略服务处理")
+            return terminalSuccess(null)
+        }
+
+        // 转发模式下：停止旧 runtime 以释放绑定到旧网络接口的 UDP Socket，
+        // 再重新 Join 时 startRuntime 会创建新 Socket 并重新执行 protect()。
+        //
+        // 关键：此处必须 skipStartPolicyCheck=true。
+        // 重连只负责重建 Socket、恢复连通性，绝不在此重新做内网判定——
+        // 否则外网 WiFi 与家里同网段（如 192.168.1.0/24）会被误判为内网，
+        // 从而错误地进入仅监听模式、停掉中转，导致拿到 IP 却连不上家里内网。
+        // 内网判定唯一由并行派发的 triggerAutoRoutePolicyCheck 负责。
+        stateStore.setState(ServiceState.connecting(activeNetworkId, action.reason))
+        runtimeService.stopRuntime(keepServiceAlive = true)
+
+        val entity = networkRepository.findById(activeNetworkId)
+            ?: return terminalFailure(
+                ServiceError(
+                    code = ServiceErrorCode.VALIDATION_FAILED,
+                    message = getString(R.string.error_target_network_config_not_found),
+                    recoverable = true,
+                ),
+            )
+
+        return handleJoin(
+            ServiceAction.Join(
+                params = entity.toJoinParams(),
+                hasExplicitNetworkId = false,
+                reason = action.reason,
+            ),
+            skipStartPolicyCheck = true,
+        )
     }
 
     /**
@@ -971,24 +1096,20 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     }
 
     /**
-     * 按“自动路由探测”开关同步网络监听器开关。
+     * 启动网络接口变化监听器。
      *
      * 说明：
-     * 1. 仅当“自定义 Planet + 自动路由探测”都开启时才启动监听；
-     * 2. 关闭时立即停止监听，减少后台无意义唤醒；
+     * 1. 网络监听器与”自动路由探测”开关解耦——切网时必须重建 UDP Socket，
+     *    无论是否开启自动路由，因此此处始终启动监听器；
+     * 2. 路由策略检查（内网探测/监听模式切换）在监听器回调内部按开关判断；
      * 3. 该方法幂等，重复调用不会引发额外开销。
      */
     private fun syncNetworkObserverByPolicy() {
         if (!::observerPipeline.isInitialized) {
             return
         }
-        if (routePolicyService.shouldEnableNetworkObserver()) {
-            observerPipeline.startNetworkObserver()
-            logChain("自动路由已开启，网络监听器启动")
-        } else {
-            observerPipeline.stopNetworkObserver()
-            logChain("自动路由未开启，网络监听器关闭")
-        }
+        observerPipeline.startNetworkObserver()
+        logChain("网络监听器启动 自动路由=${routePolicyService.shouldEnableNetworkObserver()}")
     }
 
     /**
@@ -1099,6 +1220,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             is ServiceAction.NotificationDismissed,
             is ServiceAction.SyncNetworkConfig,
             is ServiceAction.ReconfigureTunnel,
+            is ServiceAction.PhysicalNetworkChanged,
             is ServiceAction.OrbitMoons,
             is ServiceAction.DeorbitMoons,
             is ServiceAction.QueryPeers,
@@ -1180,6 +1302,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             is ServiceAction.SyncNetworkConfig ->
                 "同步网络配置 原因=${action.reason} networkId=${action.networkId.value} 配置变化=${action.configChanged}"
             is ServiceAction.ReconfigureTunnel -> "重建隧道 原因=${action.reason} networkId=${action.networkId.value}"
+            is ServiceAction.PhysicalNetworkChanged -> "物理网络变化 原因=${action.reason}"
             is ServiceAction.OrbitMoons -> "Moon 入轨 原因=${action.reason} 数量=${action.moons.size}"
             is ServiceAction.DeorbitMoons -> "Moon 退轨 原因=${action.reason} 数量=${action.moonWorldIds.size}"
             is ServiceAction.QueryPeers -> "查询节点 peers 原因=${action.reason}"
@@ -1190,6 +1313,14 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
     companion object {
         private const val TAG = "ZeroTierVpnService"
+
+        /**
+         * 手动连接保护窗口时长（毫秒）。
+         *
+         * 用户显式手动连接后的该时段内，禁止自动路由策略把会话拉入仅监听模式，
+         * 避免“刚手动连上就因外网与家里同网段被误判打断”。仅拦截进入仅监听，不影响恢复转发。
+         */
+        private const val MANUAL_CONNECT_PROTECTION_MS = 10_000L
 
         /** 包名格式校验器。 */
         private val PACKAGE_NAME_REGEX = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")

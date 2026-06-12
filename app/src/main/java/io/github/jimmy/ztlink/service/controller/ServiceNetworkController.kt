@@ -116,18 +116,32 @@ class ServiceNetworkController(
     }
 
     /**
-     * 监听系统网络变化并触发策略复检。
+     * 监听系统网络变化，触发 UDP Socket 重建与路由策略复检。
+     *
+     * 事件分类：
+     * 1. 接口切换事件（from≠to）：重建 UDP Socket + 策略复检；
+     * 2. WiFi IP 分配补偿事件（from==to==WIFI, reason=wifi_ip_assigned）：
+     *    仅策略复检，不重建 Socket（接口未变，只是 DHCP 刚完成）。
      */
     private fun startObserveNetworkChanges() {
         networkChangeObserver.start { event ->
-            logChain("检测到网络变化 原因=${event.reason} from=${event.from} to=${event.to}")
-            val isWifiCellularSwitch =
-                (event.from == NetworkTransport.WIFI && event.to == NetworkTransport.CELLULAR) ||
-                    (event.from == NetworkTransport.CELLULAR && event.to == NetworkTransport.WIFI)
-            if (!isWifiCellularSwitch) {
-                // 只处理 Wi-Fi <-> 蜂窝切换，其余事件全部忽略。
-                return@start
+            logChain("检测到网络变化 原因=${event.reason} from=${event.from} to=${event.to} ip=${event.wifiIpv4 ?: "none"}")
+
+            val isWifiIpCompensation = event.reason == "wifi_ip_assigned"
+
+            if (!isWifiIpCompensation) {
+                // 接口切换：仅当物理网络切换到 WiFi 或蜂窝时处理。
+                val hasNewNetwork = event.to == NetworkTransport.WIFI || event.to == NetworkTransport.CELLULAR
+                if (!hasNewNetwork) {
+                    return@start
+                }
+                // 始终触发 UDP Socket 重建，保证 ZeroTier 切网后连通性。
+                serviceScope.launch {
+                    dispatchAction(ServiceAction.PhysicalNetworkChanged(reason = event.reason))
+                }
             }
+
+            // 路由策略复检（含 DHCP 补偿场景）；auto-route 未开启时为 no-op。
             serviceScope.launch {
                 routePolicyService.triggerAutoRoutePolicyCheck(
                     reason = event.reason,

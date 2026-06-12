@@ -1,5 +1,10 @@
 package io.github.jimmy.ztlink.service.policy
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.SystemClock
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.jimmy.ztlink.data.settings.SettingsStateHolder
 import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
 import io.github.jimmy.ztlink.service.observer.NetworkTransport
@@ -8,6 +13,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.NetworkInterface
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -55,13 +62,25 @@ interface RoutePolicyRuntimeDelegate {
  *
  * 策略规则：
  * 1. 用户关闭自动探测时，不干预；
- * 2. 用户配置了“内网探测 IP”且当前 Wi-Fi IP 与其在同网段时，进入监控模式；
- * 3. 非 Wi-Fi 或不在同网段时恢复中转。
+ * 2. 用户配置了“内网探测 IP”，且**某个真实物理网卡**与其同网段时，进入监控模式；
+ * 3. 不在任何物理网卡同网段（含蜂窝、无网络）时恢复中转。
+ *
+ * 实现要点（对齐原型，避免“切到蜂窝仍误判内网”）：
+ * - 内网判定**直接遍历系统所有物理网卡**（跳过 VPN/蜂窝接口），用网卡真实 IP 比对同网段；
+ * - **不依赖**切网事件携带的 transport、不依赖 `currentTransport()`/`activeNetworkInfo`、
+ *   不依赖缓存的 lastTransport——这些单一来源在 VPN 隧道开关、切网过渡瞬间易失真，
+ *   会导致蜂窝下被误判为内网而不恢复转发；
+ * - 判定结果只有 `true`（命中物理内网）或 `false`（未命中/无物理网卡），**绝不返回 null**，
+ *   保证蜂窝场景一定走 RESUME_RELAY 恢复转发。
  */
 @Singleton
 class RoutePolicyEvaluator @Inject constructor(
+    @param:ApplicationContext private val appContext: Context,
     private val settingsStateHolder: SettingsStateHolder,
 ) {
+    private val connectivityManager: ConnectivityManager? =
+        appContext.getSystemService(ConnectivityManager::class.java)
+
     /**
      * 读取当前配置的内网探测 IP（归一化后）。
      *
@@ -87,6 +106,10 @@ class RoutePolicyEvaluator @Inject constructor(
 
     /**
      * 评估当前网络环境下的路由策略决策。
+     *
+     * 注意：参数 [observedTransport]/[observedWifiIpv4]/[observedWifiPrefixLength] 仅作日志参考，
+     * **不再参与内网判定**。内网判定一律以系统真实物理网卡为准（见 [detectIntranetByPhysicalInterfaces]），
+     * 以彻底避免“切到蜂窝后仍被误判为内网、不恢复转发”的问题。
      */
     fun evaluate(
         reason: String,
@@ -118,59 +141,87 @@ class RoutePolicyEvaluator @Inject constructor(
                 detail = "probe_ip_not_configured",
                 enabled = true,
             )
-        when (observedTransport) {
-            NetworkTransport.CELLULAR,
-            NetworkTransport.ETHERNET,
-            -> {
-                return RoutePolicyDecision(
-                    action = RoutePolicyAction.RESUME_RELAY,
-                    inIntranet = false,
-                    detail = "observed_transport_not_wifi,transport:$observedTransport,reason:$reason",
-                    enabled = true,
-                )
-            }
 
-            NetworkTransport.NONE -> {
-                return RoutePolicyDecision(
-                    action = RoutePolicyAction.RESUME_RELAY,
-                    inIntranet = false,
-                    detail = "observed_transport_none_resume,reason:$reason",
-                    enabled = true,
-                )
-            }
-
-            NetworkTransport.WIFI,
-            NetworkTransport.VPN,
-            NetworkTransport.UNKNOWN,
-            null,
-            -> Unit
-        }
-
-        val currentWifiIpv4 = normalizeIpv4(observedWifiIpv4)
-            ?: return RoutePolicyDecision(
-                action = RoutePolicyAction.KEEP_RUNNING,
-                inIntranet = null,
-                detail = "current_wifi_ip_unknown",
-                enabled = true,
-            )
-        val prefixLength = observedWifiPrefixLength?.coerceIn(0, IPV4_MAX_PREFIX)
-            ?: return RoutePolicyDecision(
-                action = RoutePolicyAction.KEEP_RUNNING,
-                inIntranet = null,
-                detail = "current_wifi_prefix_unknown",
-                enabled = true,
-            )
-        val inIntranet = isInSameSubnet(
-            leftIpv4 = configuredProbeIp,
-            rightIpv4 = currentWifiIpv4,
-            prefixLength = prefixLength,
-        )
+        // 直接遍历真实物理网卡判定，不依赖事件/实时 transport 单一来源。
+        val detection = detectIntranetByPhysicalInterfaces(configuredProbeIp)
         return RoutePolicyDecision(
-            action = if (inIntranet) RoutePolicyAction.ENTER_MONITOR_ONLY else RoutePolicyAction.RESUME_RELAY,
-            inIntranet = inIntranet,
-            detail = "ip_match:$inIntranet,current:$currentWifiIpv4,configured:$configuredProbeIp,prefix:$prefixLength,reason:$reason",
+            action = if (detection.inIntranet) {
+                RoutePolicyAction.ENTER_MONITOR_ONLY
+            } else {
+                RoutePolicyAction.RESUME_RELAY
+            },
+            inIntranet = detection.inIntranet,
+            detail = "${detection.detail},configured:$configuredProbeIp,reason:$reason" +
+                ",event_transport:${observedTransport ?: "none"}",
             enabled = true,
         )
+    }
+
+    /**
+     * 物理网卡内网探测结果。
+     */
+    private data class PhysicalIntranetDetection(
+        val inIntranet: Boolean,
+        val detail: String,
+    )
+
+    /**
+     * 遍历系统全部网络，仅在**真实物理网卡**（跳过 VPN/蜂窝）上比对同网段。
+     *
+     * 规则（对齐原型 `AutoConnectPolicy.detectIntranetState`）：
+     * 1. 跳过 VPN 接口（避免把 ZeroTier/TUN 的地址误判为物理网卡）；
+     * 2. 跳过蜂窝接口（运营商私网段易引入误判，且蜂窝下本就应恢复转发）；
+     * 3. 任一物理网卡 IP 与探测 IP 同网段 → 命中内网（true）；
+     * 4. 遍历完未命中、无网络、或异常 → 一律返回 false（恢复转发），**绝不返回 null**。
+     */
+    @Suppress("DEPRECATION")
+    private fun detectIntranetByPhysicalInterfaces(configuredProbeIp: String): PhysicalIntranetDetection {
+        val targetAddress = runCatching { InetAddress.getByName(configuredProbeIp) }.getOrNull()
+            ?: return PhysicalIntranetDetection(false, "probe_ip_invalid")
+        val manager = connectivityManager
+            ?: return PhysicalIntranetDetection(false, "connectivity_manager_null")
+
+        val allNetworks = manager.allNetworks
+        if (allNetworks.isEmpty()) {
+            return PhysicalIntranetDetection(false, "no_active_network")
+        }
+
+        for (network in allNetworks) {
+            val capabilities = manager.getNetworkCapabilities(network) ?: continue
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                continue
+            }
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                continue
+            }
+            val linkProperties = manager.getLinkProperties(network) ?: continue
+            val interfaceName = linkProperties.interfaceName?.takeIf { it.isNotEmpty() } ?: continue
+            // 校验该接口确实存在（与原型一致，进一步排除已失效的网络快照）。
+            NetworkInterface.getByName(interfaceName) ?: continue
+
+            for (linkAddress in linkProperties.linkAddresses) {
+                val localAddress = linkAddress.address ?: continue
+                if (localAddress.isLoopbackAddress) {
+                    continue
+                }
+                if (localAddress !is Inet4Address) {
+                    continue
+                }
+                val localIpv4 = localAddress.hostAddress ?: continue
+                if (isInSameSubnet(
+                        leftIpv4 = configuredProbeIp,
+                        rightIpv4 = localIpv4,
+                        prefixLength = linkAddress.prefixLength,
+                    )
+                ) {
+                    return PhysicalIntranetDetection(
+                        inIntranet = true,
+                        detail = "same_subnet_via_$interfaceName,local:$localIpv4/${linkAddress.prefixLength}",
+                    )
+                }
+            }
+        }
+        return PhysicalIntranetDetection(false, "different_subnet_physical_networks")
     }
 }
 
@@ -183,9 +234,41 @@ class RoutePolicyService @Inject constructor(
     private val runtimeDelegateRef: AtomicReference<RoutePolicyRuntimeDelegate?> = AtomicReference(null)
     private val policyMutex: Mutex = Mutex()
 
+    /**
+     * 手动连接保护窗口截止时间（基于 [SystemClock.elapsedRealtime]）。
+     *
+     * 用途：用户显式手动连接后的一段时间内，禁止自动路由策略把会话拉入仅监听模式，
+     * 避免“刚连上就被同网段误判打断”的体验问题（对齐原型行为）。
+     * 仅拦截“进入仅监听”，不影响“恢复转发”。
+     */
+    private val manualConnectProtectionDeadlineMs: AtomicLong = AtomicLong(0L)
+
     fun bindRuntimeDelegate(delegate: RoutePolicyRuntimeDelegate?) {
         runtimeDelegateRef.set(delegate)
         logChain("策略委托绑定 attached=${delegate != null}")
+    }
+
+    /**
+     * 设置/清除手动连接保护窗口。
+     *
+     * @param hasExplicitNetworkId 是否为用户显式发起的连接；仅显式连接才开启保护窗口。
+     * @param protectionMs 保护时长（毫秒）。
+     */
+    fun updateManualProtectionDeadline(hasExplicitNetworkId: Boolean, protectionMs: Long) {
+        if (!hasExplicitNetworkId) {
+            manualConnectProtectionDeadlineMs.set(0L)
+            return
+        }
+        val deadline = SystemClock.elapsedRealtime() + protectionMs
+        manualConnectProtectionDeadlineMs.set(deadline)
+        logChain("手动连接保护窗口设置 截止=$deadline 时长=${protectionMs}ms")
+    }
+
+    /**
+     * 清除手动连接保护窗口（离网/停止时调用，避免窗口跨会话残留）。
+     */
+    fun clearManualProtectionDeadline() {
+        manualConnectProtectionDeadlineMs.set(0L)
     }
 
     /**
@@ -284,6 +367,14 @@ class RoutePolicyService @Inject constructor(
                 RoutePolicyAction.ENTER_MONITOR_ONLY -> {
                     if (delegate.isMonitorOnlyMode()) {
                         logChain("自动策略跳过进入仅监听 原因=$reason 详情=already_monitor_only")
+                        return@withLock
+                    }
+                    val now = SystemClock.elapsedRealtime()
+                    val deadline = manualConnectProtectionDeadlineMs.get()
+                    if (now < deadline) {
+                        logChain(
+                            "自动策略跳过进入仅监听 原因=$reason 详情=manual_connect_protection now=$now 截止=$deadline",
+                        )
                         return@withLock
                     }
                     delegate.enterMonitorOnly(reason, decision.detail)
