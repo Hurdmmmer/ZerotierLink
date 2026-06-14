@@ -43,6 +43,7 @@ import io.github.jimmy.ztlink.service.runtime.RuntimeContext
 import io.github.jimmy.ztlink.service.runtime.RuntimeService
 import io.github.jimmy.ztlink.util.ChainLog
 import javax.inject.Inject
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -116,9 +117,8 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         getSystemService(PowerManager::class.java)
     }
 
-    /** 标记前台通知是否已启动。 */
-    @Volatile
-    private var foregroundStarted: Boolean = false
+    /** 标记前台通知是否已启动（用 AtomicBoolean 消除 start/stop 的 check-then-act 竞态）。 */
+    private val foregroundStarted = AtomicBoolean(false)
 
     override fun onCreate() {
         super.onCreate()
@@ -623,14 +623,19 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             logChain(
                 "恢复转发被内网策略拦截 networkId=${activeNetwork.value} 详情=${startPolicy.detail}",
             )
+            // 与 handleEnterMonitorOnly 对齐：必须同步置 monitorOnlyMode 标志并发射 effect，
+            // 否则 isMonitorOnlyMode() 与 state 不一致，且订阅 effects 的 UI 会错过这次仅监听切换。
+            runtimeService.updateMonitorOnlyMode(true)
             val monitorState = ServiceState.monitorOnly(
                 networkId = activeNetwork,
                 reason = action.reason,
                 detail = startPolicy.detail,
                 enteredAtMs = System.currentTimeMillis(),
             )
+            val effect = ServiceEffect.monitorOnlyEntered(activeNetwork, action.reason, startPolicy.detail)
             stateStore.setState(monitorState)
-            return ServiceActionResult(accepted = true, terminalState = monitorState)
+            stateStore.emitEffect(effect)
+            return ServiceActionResult(accepted = true, terminalState = monitorState, effect = effect)
         }
 
         // 恢复前执行与 Join 一致的门禁检查，避免在蜂窝禁用等场景被自动恢复绕过设置。
@@ -655,9 +660,17 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
                 )
             }
             stateStore.setState(monitorState)
+            // 补发 effect，保证订阅 effects 的 UI 不会错过这次（门禁拦截导致的）仅监听切换。
+            val effect = ServiceEffect.monitorOnlyEntered(
+                activeNetwork,
+                action.reason,
+                monitorState.detail.orEmpty(),
+            )
+            stateStore.emitEffect(effect)
             return ServiceActionResult(
                 accepted = true,
                 terminalState = monitorState,
+                effect = effect,
                 error = environmentError,
             )
         }
@@ -675,28 +688,33 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         }
 
         val entity = networkRepository.findById(activeNetwork)
-        if (entity != null) {
-            val reconfigureResult = runtimeService.establishVpnTunnel(
-                VpnTunnelConfig(
-                    networkId = entity.networkId,
-                    routeViaZeroTier = entity.config.routeViaZeroTier,
-                    dnsMode = entity.config.dnsMode,
-                    customDnsServers = normalizeDnsServers(entity.resolveCustomDnsServers()),
-                    whitelistPackages = normalizePackages(whitelistPackagesProvider.listWhitelistPackages()),
-                    includeBuiltInWhitelistPackages = true,
-                    reason = action.reason,
+            ?: return terminalFailure(
+                ServiceError(
+                    code = ServiceErrorCode.VALIDATION_FAILED,
+                    message = getString(R.string.error_target_network_config_not_found),
+                    recoverable = true,
                 ),
             )
-            if (!reconfigureResult.isRuntimeSuccess()) {
-                if (reconfigureResult.requiresConnectingStateOnTunnelFailure()) {
-                    return holdConnectingState(
-                        networkId = entity.networkId,
-                        reason = action.reason,
-                        runtimeNetwork = runtimeService.getNetworkConfig(entity.networkId),
-                    )
-                }
-                return terminalFailure(reconfigureResult.toServiceError(ServiceErrorCode.ESTABLISH_VPN_TUNNEL_FAILED))
+        val reconfigureResult = runtimeService.establishVpnTunnel(
+            VpnTunnelConfig(
+                networkId = entity.networkId,
+                routeViaZeroTier = entity.config.routeViaZeroTier,
+                dnsMode = entity.config.dnsMode,
+                customDnsServers = normalizeDnsServers(entity.resolveCustomDnsServers()),
+                whitelistPackages = normalizePackages(whitelistPackagesProvider.listWhitelistPackages()),
+                includeBuiltInWhitelistPackages = true,
+                reason = action.reason,
+            ),
+        )
+        if (!reconfigureResult.isRuntimeSuccess()) {
+            if (reconfigureResult.requiresConnectingStateOnTunnelFailure()) {
+                return holdConnectingState(
+                    networkId = entity.networkId,
+                    reason = action.reason,
+                    runtimeNetwork = runtimeService.getNetworkConfig(entity.networkId),
+                )
             }
+            return terminalFailure(reconfigureResult.toServiceError(ServiceErrorCode.ESTABLISH_VPN_TUNNEL_FAILED))
         }
 
         val effect = ServiceEffect.monitorOnlyExited(activeNetwork, action.reason)
@@ -1077,7 +1095,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             notificationController = notificationController,
             txBytesProvider = { runtimeContext.txBytes() },
             rxBytesProvider = { runtimeContext.rxBytes() },
-            isForegroundStarted = { foregroundStarted },
+            isForegroundStarted = { foregroundStarted.get() },
             isScreenInteractive = { powerManager.isInteractive },
         )
         val networkController = ServiceNetworkController(
@@ -1117,21 +1135,11 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      */
     private fun startForegroundNotification() {
         val notificationEnabled = NotificationManagerCompat.from(this).areNotificationsEnabled()
-        logChain("前台通知启动 通知权限可用=$notificationEnabled 已启动=$foregroundStarted")
+        logChain("前台通知启动 通知权限可用=$notificationEnabled 已启动=${foregroundStarted.get()}")
         val notification = notificationController.buildForegroundNotification()
-        if (foregroundStarted) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    ServiceNotificationController.NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                )
-            } else {
-                startForeground(ServiceNotificationController.NOTIFICATION_ID, notification)
-            }
-            return
-        }
-        foregroundStarted = true
+        // 无论此前是否已启动，都调用 startForeground（系统幂等，且 startForegroundService
+        // 后必须及时 startForeground）；标志仅用 CAS 维护，消除与 stop 的 check-then-act 竞态。
+        foregroundStarted.set(true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 ServiceNotificationController.NOTIFICATION_ID,
@@ -1246,11 +1254,11 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
      * 停止前台通知并重置标记。
      */
     private fun stopForegroundAndReset() {
-        if (!foregroundStarted) {
+        // CAS：仅当此前确为已启动时才执行一次 stop，避免并发重复 stop 或与 start 竞态。
+        if (!foregroundStarted.compareAndSet(true, false)) {
             return
         }
         logChain("前台通知退出 remove=true")
-        foregroundStarted = false
         stopForegroundCompat(remove = true)
     }
 

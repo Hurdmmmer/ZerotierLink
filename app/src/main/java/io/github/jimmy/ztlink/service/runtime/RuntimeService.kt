@@ -563,11 +563,21 @@ class RuntimeService @Inject constructor(
             // 第九步：双向绑定 IO 句柄
             // 将 VpnService 生成的文件描述符传给 ZeroTier 内核（JNI 层）
             // 这样系统接收的明文流量才能进入 ZT 加密，ZT 加密后的流量才能发往系统
+            //
+            // 关键：input/output 创建后到 attachTunnelIo/bindTunnelIo 之间若抛异常，
+            // 必须显式关闭新建的 vpnSocket/input/output，否则外层 getOrElse 捕获后
+            // 这三个句柄无人回收，反复建隧道失败会累积 FD 泄漏直至耗尽。
             val input = FileInputStream(vpnSocket.fileDescriptor)
             val output = FileOutputStream(vpnSocket.fileDescriptor)
-
-            runtime.attachTunnelIo(vpnSocket, input, output)
-            runtimeContext.bindTunnelIo(input, output)
+            try {
+                runtime.attachTunnelIo(vpnSocket, input, output)
+                runtimeContext.bindTunnelIo(input, output)
+            } catch (error: Throwable) {
+                closeQuietly(output)
+                closeQuietly(input)
+                closeQuietly(vpnSocket)
+                throw error
+            }
             runtimeContext.setActiveNetworkId(vpnTunnelConfig.networkId.toLongId())
             logChain("隧道IO已绑定 networkId=${vpnTunnelConfig.networkId.value} fdReady=true")
 
@@ -614,9 +624,9 @@ class RuntimeService @Inject constructor(
      *
      * @return 网络配置列表。
      */
-    suspend fun listNetworks(): List<RuntimeNetworkInfo> {
-        val runtime = runtimeRef.get() ?: return emptyList()
-        return runtime.networkConfigs().orEmpty()
+    suspend fun listNetworks(): List<RuntimeNetworkInfo> = runtimeLock.withLock {
+        val runtime = runtimeRef.get() ?: return@withLock emptyList()
+        runtime.networkConfigs().orEmpty()
             .mapNotNull { it.networkRuntimeConfig() }
     }
 
@@ -626,9 +636,9 @@ class RuntimeService @Inject constructor(
      * @param networkId 目标网络 ID。
      * @return 网络配置，未命中返回 null。
      */
-    suspend fun getNetworkConfig(networkId: NetworkId): RuntimeNetworkInfo? {
-        val runtime = runtimeRef.get() ?: return null
-        return runtime.networkConfig(networkId.toLongId())?.networkRuntimeConfig()
+    suspend fun getNetworkConfig(networkId: NetworkId): RuntimeNetworkInfo? = runtimeLock.withLock {
+        val runtime = runtimeRef.get() ?: return@withLock null
+        runtime.networkConfig(networkId.toLongId())?.networkRuntimeConfig()
     }
 
     /**
@@ -636,9 +646,9 @@ class RuntimeService @Inject constructor(
      *
      * @return Peer 列表。
      */
-    suspend fun listPeers(): List<RuntimePeerInfo> {
-        val runtime = runtimeRef.get() ?: return emptyList()
-        return runtime.peers().orEmpty().map { it.toRuntimePeer() }
+    suspend fun listPeers(): List<RuntimePeerInfo> = runtimeLock.withLock {
+        val runtime = runtimeRef.get() ?: return@withLock emptyList()
+        runtime.peers().orEmpty().map { it.toRuntimePeer() }
     }
 
     /**

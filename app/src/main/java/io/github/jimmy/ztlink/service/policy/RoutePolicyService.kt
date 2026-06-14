@@ -420,13 +420,20 @@ private fun isInSameSubnet(
     if (leftBytes.size != 4 || rightBytes.size != 4) {
         return false
     }
-    val normalizedPrefix = prefixLength.coerceIn(0, IPV4_MAX_PREFIX)
+    // 边界守卫（对齐原型 AutoConnectPolicy）：
+    // prefixLength<=0 或 >32 均视为无效前缀，直接判否，避免：
+    // 1. prefix=0 时 `-1 shl 32` 因 JVM 移位 mod 32 退化为 `-1`（全 1 掩码），
+    //    使比较错误地退化为“完全相等才匹配”，语义与 /0 含义相反；
+    // 2. 把无效前缀的物理网卡误判为同网段内网。
+    if (prefixLength <= 0 || prefixLength > IPV4_MAX_PREFIX) {
+        return false
+    }
     val leftInt = bytesToInt(leftBytes)
     val rightInt = bytesToInt(rightBytes)
-    val mask = if (normalizedPrefix == IPV4_MAX_PREFIX) {
+    val mask = if (prefixLength == IPV4_MAX_PREFIX) {
         -1
     } else {
-        (-1 shl (IPV4_MAX_PREFIX - normalizedPrefix))
+        (-1 shl (IPV4_MAX_PREFIX - prefixLength))
     }
     return (leftInt and mask) == (rightInt and mask)
 }

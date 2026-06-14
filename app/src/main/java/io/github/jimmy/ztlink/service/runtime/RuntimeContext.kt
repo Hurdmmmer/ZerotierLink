@@ -718,7 +718,10 @@ class RuntimeContext @Inject constructor(
                     if (latest != null && latest !== currentInput) {
                         return latest
                     }
-                    tunInputWakeCondition.await()
+                    // 限时等待而非无限 await：若隧道始终未建立（monitor-only/授权失败等）
+                    // 导致 notifyTunInputChanged 永不触发，仍能周期性醒来重检条件与中断标志，
+                    // 避免 TUN 桥接线程永久挂起、无法被正常停止流程之外的方式自愈。
+                    tunInputWakeCondition.await(TUN_INPUT_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 }
             }
             null
@@ -756,6 +759,15 @@ class RuntimeContext @Inject constructor(
 
         /** 异常重试等待时长。 */
         private const val ERROR_RETRY_DELAY_MS = 500L
+
+        /**
+         * TUN 输入流等待超时（毫秒）。
+         *
+         * 用于 awaitTunInputAvailableInterruptibly 的限时等待：即便唤醒信号
+         * 因隧道始终未建立而永不到来，线程也能周期性醒来重检条件与中断标志，
+         * 不会无界挂起。1 秒是“及时自检”与“空转开销可忽略”的折中。
+         */
+        private const val TUN_INPUT_WAIT_TIMEOUT_MS = 1_000L
 
         /** 以太类型：ARP。 */
         private const val ETHER_TYPE_ARP = 0x0806
