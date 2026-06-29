@@ -1036,3 +1036,17 @@
     - 非 `CONNECTED` 状态统一回落为“空数据 + 非 loading”。
 - 验证结果：
   - `:app:compileDebugKotlin` 通过。
+
+## 10.57 START_STICKY 空 Intent 重建恢复修复（2026-05-19）
+- 已完成：
+  - 修复场景：
+    - 前台 VPN 服务被系统回收后，`START_STICKY` 重建阶段可能以空 Intent 回调 `onStartCommand`；
+    - 现有逻辑把空 Intent 直接视为无效命令并 `stopSelf(startId)`，会中断服务自恢复链路。
+  - 根因：
+    - “省电防空转”与“sticky 重建恢复”使用了同一分支处理，误把系统合法重建信号当作异常命令。
+  - 处理：
+    - `ZeroTierVpnService.onStartCommand` 对 `intent == null` 单独分支处理；
+    - 空 Intent 统一转成 `ServiceAction.StartOrResume(reason="sticky_restart")` 进入既有恢复链路；
+    - 非空但无法解析的命令仍保持 `stopSelf(startId) + START_NOT_STICKY`，继续拦截无效调用。
+- 验证结果：
+  - `:app:compileDebugKotlin` 通过。

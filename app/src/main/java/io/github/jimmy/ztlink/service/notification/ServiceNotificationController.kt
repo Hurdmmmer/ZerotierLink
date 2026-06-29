@@ -82,11 +82,15 @@ class ServiceNotificationController @Inject constructor(
         connectedNetworkIdText = networkIdText
         statusTitle = ""
         statusContent = ""
-        // 关键逻辑：切换网络时重置采样窗口，避免速率跳变。
-        lastSampleAtMs = 0L
-        lastTxBytes = 0L
-        lastRxBytes = 0L
-        lastTrafficText = DEFAULT_TRAFFIC_TEXT
+        // 关键修复：切网/重连时**不再清零采样基线**。
+        //
+        // 原因：txBytes/rxBytes 由 @Singleton RuntimeContext 单调累计、永不复位，
+        // 跨重连依旧连续；若每次进入 CONNECTED 都清零基线，则在频繁切网（WiFi↔蜂窝
+        // 重建 UDP Socket）时，流量循环每次刚建基线就被 collectLatest 取消重启，
+        // 永远凑不齐“两次有效采样”，通知栏恒显 0.0KB/s（如切到 4G 访问内网时所见）。
+        // 基线保留后，相邻两次采样的差值仍是真实增量，速率可正常算出。
+        //
+        // 省电说明：此改动不增加任何采样频率，仅复用既有基线，反而减少无效采样。
     }
 
     /**
@@ -255,7 +259,6 @@ class ServiceNotificationController @Inject constructor(
             lastRxBytes = totalRx
             return false
         }
-
         val elapsedMs = max(nowMs - lastSampleAtMs, 1L)
         val txDelta = (totalTx - lastTxBytes).coerceAtLeast(0L)
         val rxDelta = (totalRx - lastRxBytes).coerceAtLeast(0L)
@@ -280,6 +283,17 @@ class ServiceNotificationController @Inject constructor(
         notificationManager.notify(NOTIFICATION_ID, buildConnectedNotification())
         return true
     }
+
+    /**
+     * 是否仍在等待“首个有效速率样本”。
+     *
+     * 说明：
+     * - 速率需要相邻两次采样的差值才能算出，首个样本只用于建立基线（不出数）；
+     * - 流量循环据此对**首个采样窗口**采用较短间隔，让稳定后尽快显示真实速率，
+     *   出数后立即回落到常规省电间隔（不改变稳态采样频率，仅多一次唤醒）；
+     * - `lastRefreshAtMs == 0L` 表示从未成功刷新过速率文案（含进程启动后首次连接）。
+     */
+    fun isAwaitingFirstSample(): Boolean = lastRefreshAtMs == 0L
 
     /**
      * 取消通知。

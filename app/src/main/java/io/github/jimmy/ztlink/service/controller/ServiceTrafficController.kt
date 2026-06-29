@@ -65,7 +65,14 @@ class ServiceTrafficController(
                         nowMs = System.currentTimeMillis(),
                         statsProvider = trafficStatsProvider,
                     )
-                    delay(if (changed) ACTIVE_REFRESH_DELAY_MS else IDLE_REFRESH_DELAY_MS)
+                    // 首个采样窗口用短间隔，让稳定后尽快出第一个真实速率（避免干等 10~30s）；
+                    // 一旦出数即回落到常规省电间隔，不改变稳态采样频率，仅多一次唤醒。
+                    val delayMs = when {
+                        notificationController.isAwaitingFirstSample() -> FIRST_SAMPLE_DELAY_MS
+                        changed -> ACTIVE_REFRESH_DELAY_MS
+                        else -> IDLE_REFRESH_DELAY_MS
+                    }
+                    delay(delayMs)
                 }
             }
         }
@@ -82,6 +89,14 @@ class ServiceTrafficController(
     private companion object {
         /** 连接态流量高频刷新间隔。 */
         private const val ACTIVE_REFRESH_DELAY_MS: Long = 10_000L
+
+        /**
+         * 首个采样窗口的短间隔。
+         *
+         * 仅在“尚未出过任何速率”时使用，让连接稳定后能在 ~2s 内显示首个真实速率，
+         * 出数后立即回落到 10s/30s 常规间隔。稳态采样频率不变，省电策略不受影响。
+         */
+        private const val FIRST_SAMPLE_DELAY_MS: Long = 2_000L
 
         /** 连接态流量低频刷新间隔。 */
         private const val IDLE_REFRESH_DELAY_MS: Long = 30_000L

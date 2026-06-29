@@ -41,6 +41,6 @@ class ZtLinkApplication : Application() {
          * 1. 改这里即可全局开关链路调试日志；
          * 2. 建议调试阶段为 true，发布或压测阶段改为 false。
          */
-        const val CHAIN_LOG_ENABLED: Boolean = false
+        const val CHAIN_LOG_ENABLED: Boolean = true
     }
 }

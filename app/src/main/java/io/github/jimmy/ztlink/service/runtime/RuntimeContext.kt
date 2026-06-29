@@ -320,6 +320,21 @@ class RuntimeContext @Inject constructor(
     }
 
     /**
+     * 按身份清除网络配置回调。
+     *
+     * 仅当当前注册的回调确实是传入实例时才清空。Service 销毁/重建竞态下，旧实例的清理
+     * 不能踩掉新实例刚注册的内核配置回调，否则重连后内核 OP_UP/CONFIG_UPDATE 收不到，
+     * 隧道永远建不起来，表现为「完全不通」。
+     *
+     * @param callback 申请清除的回调实例。
+     */
+    fun clearNetworkConfigCallback(
+        callback: (Long, VirtualNetworkConfigOperation, VirtualNetworkConfig?) -> Unit,
+    ) {
+        networkConfigCallbackRef.compareAndSet(callback, null)
+    }
+
+    /**
      * 读取累计上行字节数。
      *
      * @return 上行字节数。
@@ -424,6 +439,10 @@ class RuntimeContext @Inject constructor(
         frameData: ByteArray,
     ) {
         val arp = parseArpFrame(frameData) ?: return
+        ChainLog.d(
+            TAG,
+            "收到ARP帧 networkId=$networkId op=${arp.operation} senderIp=${ipv4ToString(arp.senderIpv4)} senderMac=${macToString(arp.senderMac)} targetIp=${ipv4ToString(arp.targetIpv4)} frameSrcMac=${macToString(srcMac)}",
+        )
         putIpv4MacMapping(networkId = networkId, ipv4 = arp.senderIpv4, mac = arp.senderMac)
 
         // 仅对“请求本机地址”的 ARP Request 回复。
@@ -1025,6 +1044,9 @@ private class NodeUdpBridge(
     @Volatile
     private var nodeBound: Boolean = false
 
+    /** 最近一次入向 UDP 采样时间。 */
+    private var lastRxTraceAtMs: Long = 0L
+
     override fun bindNode(node: Node) {
         nodeBound = true
     }
@@ -1051,6 +1073,10 @@ private class NodeUdpBridge(
 
             val runtime = runtimeProvider() ?: continue
             val payload = packet.data.copyOf(packet.length)
+            traceInboundPacket(
+                remoteAddress = InetSocketAddress(packet.address, packet.port),
+                size = payload.size,
+            )
             val nextDeadline = longArrayOf(0L)
             val result = runtime.processWirePacket(
                 now = System.currentTimeMillis(),
@@ -1066,12 +1092,38 @@ private class NodeUdpBridge(
         }
     }
 
+    /**
+     * 入向 UDP 数据采样日志。
+     *
+     * 目的：
+     * 1. 先确认数据面是否真的有包进来；
+     * 2. 若一直完全没有采样，优先怀疑上游网络/ZeroTier 路由器侧；
+     * 3. 若持续有采样，但仍无 ARP/邻居日志，再往解包/二层分发追。
+     */
+    private fun traceInboundPacket(
+        remoteAddress: InetSocketAddress,
+        size: Int,
+    ) {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastRxTraceAtMs < RX_TRACE_SAMPLE_INTERVAL_MS) {
+            return
+        }
+        lastRxTraceAtMs = nowMs
+        ChainLog.d(
+            TAG,
+            "收到入向UDP包 remote=${remoteAddress.address.hostAddress}:${remoteAddress.port} size=$size",
+        )
+    }
+
     private companion object {
         /** 日志标签。 */
         private const val TAG = "NodeUdpBridge"
 
         /** UDP 包缓冲区大小。 */
         private const val MAX_UDP_PACKET_SIZE = 16 * 1024
+
+        /** 入向 UDP 日志采样窗口。 */
+        private const val RX_TRACE_SAMPLE_INTERVAL_MS = 2_000L
     }
 }
 

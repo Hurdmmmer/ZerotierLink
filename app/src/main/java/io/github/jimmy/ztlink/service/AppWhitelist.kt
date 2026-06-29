@@ -50,6 +50,7 @@ object BuiltInWhitelistApps {
     val packages: List<String> = listOf(
         // Keep only Android Auto bypass by default.
         "com.google.android.projection.gearhead",
+        "com.eg.android.AlipayGphone"
     )
 }
 

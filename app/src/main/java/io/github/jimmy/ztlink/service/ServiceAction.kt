@@ -139,8 +139,12 @@ sealed interface ServiceAction {
      * 物理网络接口已变化（WiFi ↔ 蜂窝切换，或从断网恢复到 WiFi/蜂窝）。
      *
      * 用途：通知服务重建 ZeroTier UDP Socket，保证切网后 ZeroTier 连通性。
+     *
+     * @property retryAttempt 重建重试次数。0 = 系统事件触发的首次处理；
+     *   >0 = ERROR 自愈失败后由内部有界重试调度器自增（用于防死循环计数）。
      */
     data class PhysicalNetworkChanged(
         override val reason: String = "physical_network_changed",
+        val retryAttempt: Int = 0,
     ) : ServiceAction
 }

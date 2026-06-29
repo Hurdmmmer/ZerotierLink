@@ -38,6 +38,15 @@ class ServiceNetworkController(
     private var runtimeConfigCallbackStarted: Boolean = false
 
     /**
+     * 本控制器实例注册到 [RuntimeContext] 的内核配置回调引用。
+     *
+     * 持有它是为了「按身份解绑」：停止时只清除自己注册的那个回调，避免 Service
+     * 销毁/重建竞态下踩掉新实例刚注册的回调（详见 [RuntimeContext.clearNetworkConfigCallback]）。
+     */
+    private var registeredConfigCallback:
+        ((Long, VirtualNetworkConfigOperation, VirtualNetworkConfig?) -> Unit)? = null
+
+    /**
      * 最近一次已处理的网络配置摘要（按 networkId 维度缓存）。
      *
      * 目的：
@@ -103,7 +112,9 @@ class ServiceNetworkController(
         }
         runtimeConfigCallbackStarted = false
         logChain("内核配置回调已停止")
-        runtimeContext.setNetworkConfigCallback(null)
+        // 仅清除本实例注册的回调，避免踩掉新实例刚注册的回调。
+        registeredConfigCallback?.let { runtimeContext.clearNetworkConfigCallback(it) }
+        registeredConfigCallback = null
         clearAllConfigFingerprints()
     }
 
@@ -135,14 +146,16 @@ class ServiceNetworkController(
                 if (!hasNewNetwork) {
                     return@start
                 }
-                // 始终触发 UDP Socket 重建，保证 ZeroTier 切网后连通性。
-                serviceScope.launch {
-                    dispatchAction(ServiceAction.PhysicalNetworkChanged(reason = event.reason))
-                }
             }
 
-            // 路由策略复检（含 DHCP 补偿场景）；auto-route 未开启时为 no-op。
+            // 收敛切网链路：单协程内“先重建 UDP Socket（A），再策略复检（B）”。
+            // 二者都是 suspend，顺序 await 即严格定序，消除原先两个独立 launch 并发抢占
+            // actionMutex 导致的 runtime/状态错配与 ERROR 死结；B 此时观察到的运行/监听状态
+            // 已是 A 提交后的真实结果。wifi_ip_assigned 补偿事件不重建 Socket，仅走 B。
             serviceScope.launch {
+                if (!isWifiIpCompensation) {
+                    dispatchAction(ServiceAction.PhysicalNetworkChanged(reason = event.reason))
+                }
                 routePolicyService.triggerAutoRoutePolicyCheck(
                     reason = event.reason,
                     observedTransport = event.to,
@@ -157,8 +170,9 @@ class ServiceNetworkController(
      * 监听 ZeroTier 内核网络配置回调并分发业务动作。
      */
     private fun startObserveRuntimeNetworkConfigUpdates() {
-        runtimeContext.setNetworkConfigCallback { nwid, op, config ->
-            val networkId = nwid.toNetworkIdOrNull() ?: return@setNetworkConfigCallback
+        // 用具名匿名函数而非内联 lambda，便于在停止时按身份精确解绑（见 stopRuntimeConfigCallback）。
+        val callback = fun(nwid: Long, op: VirtualNetworkConfigOperation, config: VirtualNetworkConfig?) {
+            val networkId = nwid.toNetworkIdOrNull() ?: return
             val status = config?.status
             val addressCount = config?.assignedAddresses?.size ?: 0
             val routeCount = config?.routes?.size ?: 0
@@ -246,6 +260,8 @@ class ServiceNetworkController(
                 }
             }
         }
+        registeredConfigCallback = callback
+        runtimeContext.setNetworkConfigCallback(callback)
     }
 
     /**

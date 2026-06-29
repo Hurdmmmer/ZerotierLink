@@ -35,6 +35,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.Closeable
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -92,10 +93,20 @@ class RuntimeService @Inject constructor(
     }
 
     /**
-     * 解绑当前 VpnService。
+     * 解绑指定 VpnService（按身份解绑）。
+     *
+     * 关键：Service 销毁/重建期间，旧实例的 onDestroy 可能晚于新实例的 onCreate 执行；
+     * 若无条件清空，会把新实例刚注册的 socketProtector 误清成 null，导致新建的 ZeroTier
+     * UDP socket 不被 protect()、出向报文被路由回 VPN 自身造成路由自环、完全不通。
+     * 因此仅当当前绑定的确实是调用方自己时才解绑。
+     *
+     * @param vpnService 申请解绑的 VpnService 实例。
      */
-    fun unbindVpnService() {
-        vpnServiceRef.set(null)
+    fun unbindVpnService(vpnService: VpnService) {
+        if (!vpnServiceRef.compareAndSet(vpnService, null)) {
+            logChain("解绑 VPN Service 跳过：已被新实例接管")
+            return
+        }
         runtimeContext.setSocketProtector(null)
         logChain("解绑 VPN Service")
     }
@@ -487,6 +498,11 @@ class RuntimeService @Inject constructor(
                 if (disableIpv6 && host is Inet6Address) {
                     return@forEach
                 }
+                subscribeAssignedAddressMulticast(
+                    runtime = runtime,
+                    networkId = vpnTunnelConfig.networkId.toLongId(),
+                    host = host,
+                )
                 builder.addAddress(host, prefix)
                 runCatching {
                     // 同时为该地址建立直连路由
@@ -873,6 +889,43 @@ class RuntimeService @Inject constructor(
     }
 
     /**
+     * 为已分配地址恢复 ZeroTier 广播/组播订阅。
+     *
+     * 设计原因：
+     * 老项目在每次隧道重建时都会调用 multicastSubscribe。
+     * 新实现遗漏这一步后，控制面可正常连通，但虚拟二层上的 ARP/邻居发现
+     * 会退化为“ARP request 连续发出，却始终学不到网关 MAC”。
+     */
+    private fun subscribeAssignedAddressMulticast(
+        runtime: NodeKernelRuntimeCore,
+        networkId: Long,
+        host: InetAddress,
+    ) {
+        val (multicastGroup, multicastAdi) = when (host) {
+            is Inet4Address -> {
+                BROADCAST_MAC_ADDRESS to ipv4AddressToLong(host)
+            }
+
+            is Inet6Address -> {
+                ipv6SolicitedNodeMulticast(host.address) to 0L
+            }
+
+            else -> return
+        }
+        val result = runtime.multicastSubscribe(networkId, multicastGroup, multicastAdi)
+        if (result != ResultCode.RESULT_OK) {
+            ChainLog.w(
+                TAG,
+                "恢复广播/组播订阅失败 networkId=${java.lang.Long.toUnsignedString(networkId, 16)} host=${host.hostAddress} result=$result",
+            )
+        } else {
+            logChain(
+                "广播/组播订阅已恢复 networkId=${java.lang.Long.toUnsignedString(networkId, 16)} host=${host.hostAddress}",
+            )
+        }
+    }
+
+    /**
      * 判定路由是否应走 ZeroTier。
      *
      * @param routeViaZeroTier 默认路由开关。
@@ -916,6 +969,32 @@ class RuntimeService @Inject constructor(
             remaining -= 8
         }
         return InetAddress.getByAddress(bytes)
+    }
+
+    /**
+     * Inet4Address -> 无符号 long。
+     */
+    private fun ipv4AddressToLong(address: Inet4Address): Long {
+        val bytes = address.address
+        return ((bytes[0].toLong() and 0xFF) shl 24) or
+            ((bytes[1].toLong() and 0xFF) shl 16) or
+            ((bytes[2].toLong() and 0xFF) shl 8) or
+            (bytes[3].toLong() and 0xFF)
+    }
+
+    /**
+     * 依据 IPv6 地址构造 ZeroTier 需要的 solicited-node 组播 MAC。
+     */
+    private fun ipv6SolicitedNodeMulticast(rawAddress: ByteArray): Long {
+        require(rawAddress.size >= 16) { "IPv6 address must contain 16 bytes." }
+        return (0x00L shl 56) or
+            (0x00L shl 48) or
+            (0x33L shl 40) or
+            (0x33L shl 32) or
+            (0xFFL shl 24) or
+            ((rawAddress[13].toLong() and 0xFF) shl 16) or
+            ((rawAddress[14].toLong() and 0xFF) shl 8) or
+            (rawAddress[15].toLong() and 0xFF)
     }
 
     /**
@@ -1061,6 +1140,9 @@ class RuntimeService @Inject constructor(
         /** 日志标签。 */
         private const val TAG = "RuntimeService"
 
+        /** 以太网广播 MAC（低 48 位）。 */
+        private const val BROADCAST_MAC_ADDRESS = 0xFFFF_FFFF_FFFFL
+
         /** VPN 默认 MTU。 */
         private const val DEFAULT_MTU = 2800
 
@@ -1096,4 +1178,3 @@ private fun Long.toNetworkIdOrNull(): NetworkId? {
     val hex = java.lang.Long.toUnsignedString(this, 16).padStart(16, '0')
     return NetworkId.parse(hex)
 }
-

@@ -132,6 +132,24 @@ class NodeKernelRuntimeCore (
     fun networkConfig(networkId: Long): VirtualNetworkConfig? = nodeRef?.networkConfig(networkId)
 
     /**
+     * 订阅指定网络上的广播/组播组。
+     *
+     * 说明：
+     * ZeroTier 的虚拟二层依赖 multicastSubscribe 接收与本地址相关的广播/组播帧。
+     * 若缺失这一步，控制面可能正常，但 ARP/邻居发现会表现为“只发不收”。
+     *
+     * @param networkId 目标网络 ID。
+     * @param multicastGroup 组播 MAC（低 48 位）。
+     * @param multicastAdi 附加分组标识。
+     * @return SDK 返回码。
+     */
+    fun multicastSubscribe(
+        networkId: Long,
+        multicastGroup: Long,
+        multicastAdi: Long,
+    ): ResultCode? = nodeRef?.multicastSubscribe(networkId, multicastGroup, multicastAdi)
+
+    /**
      * 获取当前 Peer 列表。
      *
      * @return Peer 数组。
@@ -398,7 +416,27 @@ class NodeKernelRuntimeCore (
                 bindPort = config.bindPort,
                 socketTimeoutMs = config.socketTimeoutMs,
             )
-            config.socketProtector?.invoke(socket)
+            // 关键守卫：socketProtector 为 null 时拒绝启动。
+            // 未受保护的 UDP socket 会被路由进 VPN 自身（TUN），导致 ZeroTier 报文自环、
+            // 完全不通；旧实现的 `?.invoke` 在此场景下静默跳过 protect，正是「重连后完全不通、
+            // 必须杀进程才恢复」的根因之一。这里改为缺失即抛出，由 startRuntime 的 runCatching
+            // 捕获并映射为可恢复的 RUNTIME_START_FAILED，而不是制造一个静默不通的 socket。
+            val protector = config.socketProtector
+            if (protector == null) {
+                if (config.existingSocket == null) {
+                    runCatching { socket.close() }
+                }
+                throw IllegalStateException(
+                    "socketProtector is null; refusing to start runtime with an unprotected UDP socket",
+                )
+            }
+            val protectedOk = protector.invoke(socket)
+            if (!protectedOk) {
+                ChainLog.w(
+                    TAG,
+                    "VpnService.protect 返回 false，UDP socket 可能被错误路由进 VPN bindPort=${config.bindPort}",
+                )
+            }
 
             val udpBridge = config.existingUdpBridge ?: config.udpBridgeFactory?.invoke(socket)
             val tunTapBridge = config.existingTunTapBridge ?: config.tunTapBridgeFactory?.invoke(config.networkId)

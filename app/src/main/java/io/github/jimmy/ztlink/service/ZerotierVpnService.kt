@@ -44,11 +44,14 @@ import io.github.jimmy.ztlink.service.runtime.RuntimeService
 import io.github.jimmy.ztlink.util.ChainLog
 import javax.inject.Inject
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -109,6 +112,14 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /** 动作执行互斥锁，保证所有动作串行执行。 */
     private val actionMutex: Mutex = Mutex()
 
+    /**
+     * 物理切网重建失败后的有界重试任务（单飞）。
+     *
+     * 说明：自触发的重连不会产生新的系统网络事件，故 ERROR 自愈失败时需要一次有界延迟重试
+     * 兜底，避免静置死结；同时通过单飞 + 上限 + 复查 ERROR 防止紧循环。
+     */
+    private val physicalRebuildRetryJob: AtomicReference<Job?> = AtomicReference(null)
+
     /** 观察管线：统一编排状态/流量/网络观察控制器。 */
     private lateinit var observerPipeline: ServiceRuntimeObserverPipeline
 
@@ -152,7 +163,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         logChain("收到服务命令 startId=$startId 动作=${actionSummary(action)}")
         startForegroundForAcceptedCommand(action)
         serviceScope.launch {
-            executeAction(action)
+            executeAction(action, startId)
         }
         return START_STICKY
     }
@@ -179,11 +190,15 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     override fun onDestroy() {
         logChain("服务已销毁")
         if (::observerPipeline.isInitialized) {
+            // observerPipeline.stop() 内部会「按身份」清除本实例注册的内核配置回调，
+            // 因此此处不再无条件 setNetworkConfigCallback(null)，避免踩掉新实例的回调。
             observerPipeline.stop()
         }
-        routePolicyService.bindRuntimeDelegate(null)
-        runtimeContext.setNetworkConfigCallback(null)
-        runtimeService.unbindVpnService()
+        // 按身份解绑：Service 销毁/重建竞态下，旧实例的 onDestroy 可能晚于新实例 onCreate，
+        // 无条件清空会踩掉新实例刚注册的委托/保护器，导致重连后完全不通（须杀进程才恢复）。
+        routePolicyService.unbindRuntimeDelegate(this)
+        runtimeService.unbindVpnService(this)
+        physicalRebuildRetryJob.getAndSet(null)?.cancel()
         serviceScope.cancel()
         notificationController.cancel(ServiceNotificationController.NOTIFICATION_ID)
         stopForegroundCompat(remove = true)
@@ -235,7 +250,10 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /**
      * 串行执行服务动作。
      */
-    private suspend fun executeAction(action: ServiceAction): ServiceActionResult {
+    private suspend fun executeAction(
+        action: ServiceAction,
+        startId: Int? = null,
+    ): ServiceActionResult {
         // Stop/Leave 命令在等待 actionMutex 之前先发出 STOPPING 状态，
         // 让 UI 立即响应，避免因锁等待导致界面"卡住"的感知。
         // 仅在服务处于稳定运行态（CONNECTED/MONITOR_ONLY）时才提前发出，
@@ -249,10 +267,10 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         return actionMutex.withLock {
             logChain("动作开始 ${actionSummary(action)}")
             val result = when (action) {
-                is ServiceAction.StartOrResume -> handleStartOrResume(action)
+                is ServiceAction.StartOrResume -> handleStartOrResume(action, startId)
                 is ServiceAction.Join -> handleJoin(action)
-                is ServiceAction.Leave -> handleLeave(action)
-                is ServiceAction.Stop -> handleStop(action)
+                is ServiceAction.Leave -> handleLeave(action, startId)
+                is ServiceAction.Stop -> handleStop(action, startId)
                 is ServiceAction.NotificationDismissed -> handleNotificationDismissed(action)
                 is ServiceAction.EnterMonitorOnly -> handleEnterMonitorOnly(action)
                 is ServiceAction.ResumeRelay -> handleResumeRelay(action)
@@ -278,7 +296,10 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /**
      * 处理启动命令。
      */
-    private suspend fun handleStartOrResume(action: ServiceAction.StartOrResume): ServiceActionResult {
+    private suspend fun handleStartOrResume(
+        action: ServiceAction.StartOrResume,
+        startId: Int? = null,
+    ): ServiceActionResult {
         if (action.hasExplicitNetworkId && action.targetNetworkId == null) {
             return terminalFailure(
                 ServiceError(
@@ -295,7 +316,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             stateStore.setState(stoppedState)
             logChain("启动或恢复忽略 原因=no_target_network 触发=${action.reason}")
             stopForegroundAndReset()
-            stopSelf()
+            stopSelfSafely(startId)
             return ServiceActionResult(
                 accepted = true,
                 terminalState = stoppedState,
@@ -500,10 +521,15 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /**
      * 处理离开网络动作。
      */
-    private suspend fun handleLeave(action: ServiceAction.Leave): ServiceActionResult {
+    private suspend fun handleLeave(
+        action: ServiceAction.Leave,
+        startId: Int? = null,
+    ): ServiceActionResult {
         // 主动离网时清理仅监听标记与手动连接保护窗口，避免后续状态恢复误判与窗口残留。
         runtimeService.updateMonitorOnlyMode(false)
         routePolicyService.clearManualProtectionDeadline()
+        // 取消可能待触发的切网重建重试，避免离网后被计划中的重连撤销。
+        physicalRebuildRetryJob.getAndSet(null)?.cancel()
         val leaveResult = runtimeService.leaveNetwork(action.networkId)
         val leaveNotRunning = leaveResult.resultCode == RuntimeResultCode.NOT_RUNNING
         // 关键逻辑：
@@ -556,7 +582,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         stateStore.setState(nextState)
         if (nextState.type == ServiceStateType.STOPPED) {
             observerPipeline.stopNetworkObserver()
-            stopSelf()
+            stopSelfSafely(startId)
         } else {
             syncNetworkObserverByPolicy()
         }
@@ -732,10 +758,15 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     /**
      * 处理停止动作。
      */
-    private suspend fun handleStop(action: ServiceAction.Stop): ServiceActionResult {
+    private suspend fun handleStop(
+        action: ServiceAction.Stop,
+        startId: Int? = null,
+    ): ServiceActionResult {
         // 完全停止服务时同步清理仅监听标记与手动连接保护窗口，避免窗口跨会话残留。
         runtimeService.updateMonitorOnlyMode(false)
         routePolicyService.clearManualProtectionDeadline()
+        // 取消可能待触发的切网重建重试，避免停服后被计划中的重连撤销。
+        physicalRebuildRetryJob.getAndSet(null)?.cancel()
         observerPipeline.stopNetworkObserver()
         stateStore.setState(ServiceState.stopping(action.reason))
         val stopResult = runtimeService.stopRuntime(keepServiceAlive = action.keepServiceAlive)
@@ -745,7 +776,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
         }
         stateStore.setState(ServiceState.stopped())
         if (!action.keepServiceAlive) {
-            stopSelf()
+            stopSelfSafely(startId)
         }
         return terminalSuccess(effect = null)
     }
@@ -780,21 +811,32 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     private suspend fun handlePhysicalNetworkChanged(action: ServiceAction.PhysicalNetworkChanged): ServiceActionResult {
         val currentState = stateStore.currentState()
         if (currentState.type == ServiceStateType.STOPPED ||
-            currentState.type == ServiceStateType.STOPPING ||
-            currentState.type == ServiceStateType.ERROR
+            currentState.type == ServiceStateType.STOPPING
         ) {
-            logChain("物理网络变化忽略 原因=service_not_running_or_error state=${currentState.type}")
+            logChain("物理网络变化忽略 原因=service_stopped state=${currentState.type}")
             return terminalSuccess(null)
         }
 
+        // 关键改动：ERROR 不再是一次性死结。
+        // 收到“真实网络切换事件”（或有界自重试）时，视为“尝试重连恢复”，而非静默忽略。
+        // 这样切网失败落入 ERROR 后，下一次切网即可自愈，无需杀进程重开。
+        val isRecoveringFromError = currentState.type == ServiceStateType.ERROR
+
         val activeNetworkId = currentState.networkId
             ?: runtimeService.readRuntimeState().activeNetworkId
+            // ERROR 态不携带 networkId 且 runtime 可能已停，最后兜底用最近激活网络恢复。
+            ?: (if (isRecoveringFromError) networkRepository.findLastActivated()?.networkId else null)
             ?: run {
                 logChain("物理网络变化忽略 原因=no_active_network state=${currentState.type}")
                 return terminalSuccess(null)
             }
 
-        logChain("物理网络变化处理 networkId=${activeNetworkId.value} 状态=${currentState.type} 原因=${action.reason}")
+        val runtimeState = runtimeService.readRuntimeState()
+        logChain(
+            "物理网络变化处理 networkId=${activeNetworkId.value} 状态=${currentState.type} " +
+                "运行时存活=${runtimeState.nodeReady && runtimeState.vpnSocketReady} " +
+                "自愈=$isRecoveringFromError 重试次数=${action.retryAttempt} 原因=${action.reason}",
+        )
 
         if (currentState.type == ServiceStateType.MONITOR_ONLY) {
             // 仅监听模式下 runtime 已停止，由路由策略服务的 triggerAutoRoutePolicyCheck 负责
@@ -803,8 +845,9 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             return terminalSuccess(null)
         }
 
-        // 转发模式下：停止旧 runtime 以释放绑定到旧网络接口的 UDP Socket，
+        // 转发模式下（含 ERROR 自愈）：停止旧 runtime 以释放绑定到旧网络接口的 UDP Socket，
         // 再重新 Join 时 startRuntime 会创建新 Socket 并重新执行 protect()。
+        // setState(connecting) 同时把 ERROR 态清回 CONNECTING，解除“单向门”。
         //
         // 关键：此处必须 skipStartPolicyCheck=true。
         // 重连只负责重建 Socket、恢复连通性，绝不在此重新做内网判定——
@@ -823,7 +866,7 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
                 ),
             )
 
-        return handleJoin(
+        val result = handleJoin(
             ServiceAction.Join(
                 params = entity.toJoinParams(),
                 hasExplicitNetworkId = false,
@@ -831,6 +874,48 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             ),
             skipStartPolicyCheck = true,
         )
+        // 仅在重建真正落入 ERROR 时调度一次有界延迟重试；
+        // holdConnectingState（等控制器授权，CONNECTING）属健康态，不重试。
+        if (result.terminalState.type == ServiceStateType.ERROR) {
+            scheduleBoundedRebuildRetry(reason = action.reason, attempt = action.retryAttempt)
+        } else {
+            // 重建成功/进入连接中：取消可能残留的待触发重试，避免无谓再拉起。
+            physicalRebuildRetryJob.getAndSet(null)?.cancel()
+        }
+        return result
+    }
+
+    /**
+     * 调度一次有界延迟的物理切网重建重试（防死循环）。
+     *
+     * 约束：
+     * 1. 上限保护：达到 [PHYSICAL_REBUILD_MAX_RETRIES] 不再重试，静置于可恢复的 ERROR，
+     *    等待下一次真实网络事件（attempt=0）重新进入恢复；
+     * 2. 单飞：取消上一次尚未触发的重试，保证至多一个待触发任务；
+     * 3. 触发前复查 state==ERROR，期间若已恢复则放弃，避免撤销正常连接。
+     */
+    private fun scheduleBoundedRebuildRetry(reason: String, attempt: Int) {
+        if (attempt >= PHYSICAL_REBUILD_MAX_RETRIES) {
+            logChain("物理切网重建重试已达上限 重试次数=$attempt 原因=$reason 等待下一次真实网络事件")
+            physicalRebuildRetryJob.getAndSet(null)?.cancel()
+            return
+        }
+        val job = serviceScope.launch {
+            delay(PHYSICAL_REBUILD_RETRY_DELAY_MS)
+            val state = stateStore.currentState()
+            if (state.type != ServiceStateType.ERROR) {
+                logChain("物理切网重建重试取消 原因=已离开ERROR state=${state.type}")
+                return@launch
+            }
+            logChain("物理切网重建重试触发 重试次数=${attempt + 1} 原因=$reason")
+            executeAction(
+                ServiceAction.PhysicalNetworkChanged(
+                    reason = "${reason}_retry_${attempt + 1}",
+                    retryAttempt = attempt + 1,
+                ),
+            )
+        }
+        physicalRebuildRetryJob.getAndSet(job)?.cancel()
     }
 
     /**
@@ -893,6 +978,12 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     private suspend fun handleQueryPeers(): ServiceActionResult {
         val peers = runtimeService.listPeers()
         logChain("查询节点 peers 完成 数量=${peers.size}")
+        if (peers.isNotEmpty()) {
+            val peerSummary = peers.joinToString(separator = " | ") { peer ->
+                "id=${peer.peerId},role=${peer.role},endpoint=${peer.address ?: "none"},latency=${peer.latencyMs ?: -1}"
+            }
+            logChain("查询节点 peers 详情 $peerSummary")
+        }
         val effect = ServiceEffect.peerSnapshotUpdated(
             peerCount = peers.size,
             peers = peers,
@@ -1263,6 +1354,27 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
     }
 
     /**
+     * 安全停止服务。
+     *
+     * 关键：优先使用带 startId 的 [stopSelf]——仅当「本次启动 id 仍是最近一次」时才真正停止。
+     * 这样在「断开(stopSelf) 紧接着 重连(startService) 命令在途」的竞态下，重连命令会让旧的
+     * 停止请求失效，避免 Service 被销毁、serviceScope 被取消而打断正在进行的重连/重建链路
+     * （旧实现用无参 stopSelf 会忽略 startId，正是该竞态导致「重连后完全不通、须杀进程」的根因之一）。
+     *
+     * startId 为 null（来自内部触发，如 onRevoke）时回退到无条件停止——此类场景没有在途的
+     * 竞争启动命令，应当确定性地停止。
+     *
+     * @param startId 触发本次停止的 onStartCommand 启动 id；内部触发为 null。
+     */
+    private fun stopSelfSafely(startId: Int?) {
+        if (startId != null) {
+            stopSelf(startId)
+        } else {
+            stopSelf()
+        }
+    }
+
+    /**
      * 根据网络 ID 获取其可读名称。
      */
     private suspend fun resolveNetworkDisplayName(networkId: NetworkId): String {
@@ -1329,6 +1441,12 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
          * 避免“刚手动连上就因外网与家里同网段被误判打断”。仅拦截进入仅监听，不影响恢复转发。
          */
         private const val MANUAL_CONNECT_PROTECTION_MS = 10_000L
+
+        /** 物理切网重建失败后的重试延迟（毫秒）。 */
+        private const val PHYSICAL_REBUILD_RETRY_DELAY_MS = 4_000L
+
+        /** 物理切网重建的最大有界重试次数（防死循环；超过后静置等待下次真实网络事件）。 */
+        private const val PHYSICAL_REBUILD_MAX_RETRIES = 2
 
         /** 包名格式校验器。 */
         private val PACKAGE_NAME_REGEX = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")

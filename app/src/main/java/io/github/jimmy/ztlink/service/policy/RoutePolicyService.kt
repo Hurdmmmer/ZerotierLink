@@ -1,10 +1,6 @@
 package io.github.jimmy.ztlink.service.policy
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.SystemClock
-import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.jimmy.ztlink.data.settings.SettingsStateHolder
 import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
 import io.github.jimmy.ztlink.service.observer.NetworkTransport
@@ -13,7 +9,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.net.Inet4Address
 import java.net.InetAddress
-import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
@@ -62,24 +57,20 @@ interface RoutePolicyRuntimeDelegate {
  *
  * 策略规则：
  * 1. 用户关闭自动探测时，不干预；
- * 2. 用户配置了“内网探测 IP”，且**某个真实物理网卡**与其同网段时，进入监控模式；
- * 3. 不在任何物理网卡同网段（含蜂窝、无网络）时恢复中转。
+ * 2. 实时链路为 WiFi 且其自身 IP 与配置的「内网探测 IP」同网段时，进入监控模式（省电暂停转发）；
+ * 3. 其余一切情况（蜂窝 / 无网 / 模糊不清）恢复中转。
  *
- * 实现要点（对齐原型，避免“切到蜂窝仍误判内网”）：
- * - 内网判定**直接遍历系统所有物理网卡**（跳过 VPN/蜂窝接口），用网卡真实 IP 比对同网段；
- * - **不依赖**切网事件携带的 transport、不依赖 `currentTransport()`/`activeNetworkInfo`、
- *   不依赖缓存的 lastTransport——这些单一来源在 VPN 隧道开关、切网过渡瞬间易失真，
- *   会导致蜂窝下被误判为内网而不恢复转发；
- * - 判定结果只有 `true`（命中物理内网）或 `false`（未命中/无物理网卡），**绝不返回 null**，
- *   保证蜂窝场景一定走 RESUME_RELAY 恢复转发。
+ * 实现要点：
+ * - 内网判定**只基于执行时刻的实时链路**（[NetworkChangeObserver.currentTransport] +
+ *   [NetworkChangeObserver.currentWifiIpv4Info]，由调用方读取后通过 [evaluate] 参数传入），
+ *   本评估器是纯函数，不直接触碰 ConnectivityManager，便于单测；
+ * - **设计底线：内网判定只是省电优化，判错只会「该省电时没省电」（继续转发，无害）。**
+ *   失败方向一律为 false（保持转发），**绝不返回 null**，保证不会因判定误差而暂停转发导致不通。
  */
 @Singleton
 class RoutePolicyEvaluator @Inject constructor(
-    @param:ApplicationContext private val appContext: Context,
     private val settingsStateHolder: SettingsStateHolder,
 ) {
-    private val connectivityManager: ConnectivityManager? =
-        appContext.getSystemService(ConnectivityManager::class.java)
 
     /**
      * 读取当前配置的内网探测 IP（归一化后）。
@@ -107,9 +98,20 @@ class RoutePolicyEvaluator @Inject constructor(
     /**
      * 评估当前网络环境下的路由策略决策。
      *
-     * 注意：参数 [observedTransport]/[observedWifiIpv4]/[observedWifiPrefixLength] 仅作日志参考，
-     * **不再参与内网判定**。内网判定一律以系统真实物理网卡为准（见 [detectIntranetByPhysicalInterfaces]），
-     * 以彻底避免“切到蜂窝后仍被误判为内网、不恢复转发”的问题。
+     * 设计原则（关键）：
+     * 内网判定**只是「要不要为省电而暂停转发」的优化**，判错最多是「该暂停时没暂停」——
+     * 内核继续转发，完全无害。因此本判定的失败方向必须是「保持转发（RESUME_RELAY）」，
+     * 绝不能因判定不准而暂停转发导致 app 完全不通。
+     *
+     * 判定一律基于**实时链路**（由调用方传入的 [observedTransport]/[observedWifiIpv4]/
+     * [observedWifiPrefixLength]，对应 [NetworkChangeObserver.currentTransport] /
+     * [NetworkChangeObserver.currentWifiIpv4Info] 的执行时刻读数）：
+     * - 仅当「实时传输=WIFI 且该 WiFi 自身 IP 与探测 IP 同网段」→ 命中内网 → ENTER_MONITOR_ONLY；
+     * - 其余一切情况（蜂窝 / 无网 / UNKNOWN / VPN / WiFi 但拿不到 IP / 不同网段 / 模糊不清）
+     *   → 非内网 → RESUME_RELAY，保持转发。
+     *
+     * 不再使用滞后的 best-matching 物理默认锚点：抖动期它会把已切到 4G 的设备误读为
+     * 滞留 WiFi，从而误判内网、停转发、4G 下彻底不通。
      */
     fun evaluate(
         reason: String,
@@ -142,8 +144,12 @@ class RoutePolicyEvaluator @Inject constructor(
                 enabled = true,
             )
 
-        // 直接遍历真实物理网卡判定，不依赖事件/实时 transport 单一来源。
-        val detection = detectIntranetByPhysicalInterfaces(configuredProbeIp)
+        val detection = detectIntranetByRealtimeLink(
+            configuredProbeIp = configuredProbeIp,
+            transport = observedTransport,
+            wifiIpv4 = observedWifiIpv4,
+            wifiPrefixLength = observedWifiPrefixLength,
+        )
         return RoutePolicyDecision(
             action = if (detection.inIntranet) {
                 RoutePolicyAction.ENTER_MONITOR_ONLY
@@ -152,76 +158,59 @@ class RoutePolicyEvaluator @Inject constructor(
             },
             inIntranet = detection.inIntranet,
             detail = "${detection.detail},configured:$configuredProbeIp,reason:$reason" +
-                ",event_transport:${observedTransport ?: "none"}",
+                ",transport:${observedTransport ?: "none"}",
             enabled = true,
         )
     }
 
     /**
-     * 物理网卡内网探测结果。
+     * 实时链路内网探测结果。
      */
-    private data class PhysicalIntranetDetection(
+    private data class RealtimeIntranetDetection(
         val inIntranet: Boolean,
         val detail: String,
     )
 
     /**
-     * 遍历系统全部网络，仅在**真实物理网卡**（跳过 VPN/蜂窝）上比对同网段。
+     * 基于**实时链路**判定是否处于内网。
      *
-     * 规则（对齐原型 `AutoConnectPolicy.detectIntranetState`）：
-     * 1. 跳过 VPN 接口（避免把 ZeroTier/TUN 的地址误判为物理网卡）；
-     * 2. 跳过蜂窝接口（运营商私网段易引入误判，且蜂窝下本就应恢复转发）；
-     * 3. 任一物理网卡 IP 与探测 IP 同网段 → 命中内网（true）；
-     * 4. 遍历完未命中、无网络、或异常 → 一律返回 false（恢复转发），**绝不返回 null**。
+     * 规则（失败方向一律 false=保持转发）：
+     * 1. 实时传输非 WIFI（蜂窝 / 无网 / UNKNOWN / VPN / 以太网等）→ false；
+     * 2. WIFI 但拿不到自身 IPv4 / 前缀 → false（模糊不清，保持转发）；
+     * 3. WIFI 且自身 IPv4 与探测 IP 同网段 → true（命中内网，进监控）；
+     * 4. WIFI 但不同网段 / 前缀非法 → false。
+     *
+     * **绝不返回 null**：任何不确定都判 false，保证不会因判定误差而暂停转发。
      */
-    @Suppress("DEPRECATION")
-    private fun detectIntranetByPhysicalInterfaces(configuredProbeIp: String): PhysicalIntranetDetection {
-        val targetAddress = runCatching { InetAddress.getByName(configuredProbeIp) }.getOrNull()
-            ?: return PhysicalIntranetDetection(false, "probe_ip_invalid")
-        val manager = connectivityManager
-            ?: return PhysicalIntranetDetection(false, "connectivity_manager_null")
-
-        val allNetworks = manager.allNetworks
-        if (allNetworks.isEmpty()) {
-            return PhysicalIntranetDetection(false, "no_active_network")
+    private fun detectIntranetByRealtimeLink(
+        configuredProbeIp: String,
+        transport: NetworkTransport?,
+        wifiIpv4: String?,
+        wifiPrefixLength: Int?,
+    ): RealtimeIntranetDetection {
+        if (transport != NetworkTransport.WIFI) {
+            return RealtimeIntranetDetection(false, "not_wifi:${transport ?: "none"}")
         }
-
-        for (network in allNetworks) {
-            val capabilities = manager.getNetworkCapabilities(network) ?: continue
-            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                continue
-            }
-            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-                continue
-            }
-            val linkProperties = manager.getLinkProperties(network) ?: continue
-            val interfaceName = linkProperties.interfaceName?.takeIf { it.isNotEmpty() } ?: continue
-            // 校验该接口确实存在（与原型一致，进一步排除已失效的网络快照）。
-            NetworkInterface.getByName(interfaceName) ?: continue
-
-            for (linkAddress in linkProperties.linkAddresses) {
-                val localAddress = linkAddress.address ?: continue
-                if (localAddress.isLoopbackAddress) {
-                    continue
-                }
-                if (localAddress !is Inet4Address) {
-                    continue
-                }
-                val localIpv4 = localAddress.hostAddress ?: continue
-                if (isInSameSubnet(
-                        leftIpv4 = configuredProbeIp,
-                        rightIpv4 = localIpv4,
-                        prefixLength = linkAddress.prefixLength,
-                    )
-                ) {
-                    return PhysicalIntranetDetection(
-                        inIntranet = true,
-                        detail = "same_subnet_via_$interfaceName,local:$localIpv4/${linkAddress.prefixLength}",
-                    )
-                }
-            }
+        val localIpv4 = wifiIpv4
+            ?: return RealtimeIntranetDetection(false, "wifi_no_ipv4")
+        val prefixLength = wifiPrefixLength
+            ?: return RealtimeIntranetDetection(false, "wifi_no_prefix")
+        return if (isInSameSubnet(
+                leftIpv4 = configuredProbeIp,
+                rightIpv4 = localIpv4,
+                prefixLength = prefixLength,
+            )
+        ) {
+            RealtimeIntranetDetection(
+                inIntranet = true,
+                detail = "same_subnet_via_wifi,local:$localIpv4/$prefixLength",
+            )
+        } else {
+            RealtimeIntranetDetection(
+                inIntranet = false,
+                detail = "different_subnet_wifi,local:$localIpv4/$prefixLength",
+            )
         }
-        return PhysicalIntranetDetection(false, "different_subnet_physical_networks")
     }
 }
 
@@ -246,6 +235,23 @@ class RoutePolicyService @Inject constructor(
     fun bindRuntimeDelegate(delegate: RoutePolicyRuntimeDelegate?) {
         runtimeDelegateRef.set(delegate)
         logChain("策略委托绑定 attached=${delegate != null}")
+    }
+
+    /**
+     * 按身份解绑策略委托。
+     *
+     * 与 [bindRuntimeDelegate] 配对：Service 销毁/重建竞态下，旧实例的 onDestroy 可能
+     * 晚于新实例 onCreate 执行；无条件置空会踩掉新实例刚绑定的委托，使内网/恢复决策被
+     * 静默丢弃。因此仅当当前委托确实是调用方自己时才清空。
+     *
+     * @param delegate 申请解绑的委托实例。
+     */
+    fun unbindRuntimeDelegate(delegate: RoutePolicyRuntimeDelegate) {
+        if (runtimeDelegateRef.compareAndSet(delegate, null)) {
+            logChain("策略委托解绑 detached=true")
+        } else {
+            logChain("策略委托解绑跳过：已被新实例接管")
+        }
     }
 
     /**
@@ -286,6 +292,7 @@ class RoutePolicyService @Inject constructor(
         logChain("启动策略检查开始 原因=$reason")
         val transport = networkChangeObserver.currentTransport()
         val wifiInfo = networkChangeObserver.currentWifiIpv4Info()
+        logChain("启动策略实时链路 原因=$reason 传输=$transport WiFiIP=${wifiInfo?.address ?: "none"} 前缀=${wifiInfo?.prefixLength ?: -1}")
         val decision = evaluator.evaluate(
             reason = reason,
             observedTransport = transport,
@@ -312,20 +319,13 @@ class RoutePolicyService @Inject constructor(
         observedWifiPrefixLength: Int? = null,
     ) {
         policyMutex.withLock {
-            // 策略判定优先使用本次网络事件参数，仅在事件缺失时回退到实时查询值。
+            // 内网判定一律以**执行时刻的实时链路**为准（执行可能被 mutex 延迟，
+            // 执行时的真实网络比入队时的事件快照更可信）。事件值仅留作日志对照。
             val realtimeTransport = networkChangeObserver.currentTransport()
             val realtimeWifiInfo = networkChangeObserver.currentWifiIpv4Info()
-            val transport = observedTransport ?: realtimeTransport
-            val currentWifiIpv4 = when {
-                transport == NetworkTransport.WIFI && !observedWifiIpv4.isNullOrBlank() -> observedWifiIpv4
-                transport == NetworkTransport.WIFI -> realtimeWifiInfo?.address
-                else -> null
-            }
-            val currentWifiPrefixLength = when {
-                transport == NetworkTransport.WIFI && observedWifiPrefixLength != null -> observedWifiPrefixLength
-                transport == NetworkTransport.WIFI -> realtimeWifiInfo?.prefixLength
-                else -> null
-            }
+            val transport = realtimeTransport
+            val currentWifiIpv4 = if (transport == NetworkTransport.WIFI) realtimeWifiInfo?.address else null
+            val currentWifiPrefixLength = if (transport == NetworkTransport.WIFI) realtimeWifiInfo?.prefixLength else null
             val configuredProbeIpv4 = evaluator.currentConfiguredProbeIpv4()
             logChain(
                 "自动策略实时网络 原因=$reason 配置IP=${configuredProbeIpv4 ?: "none"} 当前WiFiIP=${currentWifiIpv4 ?: "none"} 前缀=${currentWifiPrefixLength ?: -1} 使用传输=$transport 实时传输=$realtimeTransport 事件传输=${observedTransport ?: "none"} 事件IP=${observedWifiIpv4 ?: "none"} 事件前缀=${observedWifiPrefixLength ?: -1}",
