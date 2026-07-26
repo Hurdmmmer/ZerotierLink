@@ -9,6 +9,7 @@ import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
 import io.github.jimmy.ztlink.service.policy.RoutePolicyService
 import io.github.jimmy.ztlink.service.runtime.RuntimeContext
 import io.github.jimmy.ztlink.service.ServiceAction
+import io.github.jimmy.ztlink.service.observer.NetworkObservationLease
 import io.github.jimmy.ztlink.service.observer.NetworkTransport
 import io.github.jimmy.ztlink.util.ChainLog
 import kotlinx.coroutines.CoroutineScope
@@ -31,8 +32,8 @@ class ServiceNetworkController(
     private val networkRepository: NetworkRepository,
 ) {
 
-    /** 网络切换监听是否已启动。 */
-    private var networkObserverStarted: Boolean = false
+    /** 本控制器持有的网络观察会话凭据。 */
+    private var networkObservationLease: NetworkObservationLease? = null
 
     /** 内核网络配置回调是否已注册。 */
     private var runtimeConfigCallbackStarted: Boolean = false
@@ -67,24 +68,21 @@ class ServiceNetworkController(
      * 2. 与内核配置回调解耦，避免关闭自动路由时误关核心配置回调。
      */
     fun startNetworkObserver() {
-        if (networkObserverStarted) {
+        if (networkObservationLease != null) {
             return
         }
-        networkObserverStarted = true
+        networkObservationLease = startObserveNetworkChanges()
         logChain("网络切换监听已启动")
-        startObserveNetworkChanges()
     }
 
     /**
      * 停止网络切换监听。
      */
     fun stopNetworkObserver() {
-        if (!networkObserverStarted) {
-            return
-        }
-        networkObserverStarted = false
+        val lease = networkObservationLease ?: return
+        networkObservationLease = null
         logChain("网络切换监听已停止")
-        networkChangeObserver.stop()
+        networkChangeObserver.stop(lease)
     }
 
     /**
@@ -134,15 +132,18 @@ class ServiceNetworkController(
      * 2. WiFi IP 分配补偿事件（from==to==WIFI, reason=wifi_ip_assigned）：
      *    仅策略复检，不重建 Socket（接口未变，只是 DHCP 刚完成）。
      */
-    private fun startObserveNetworkChanges() {
-        networkChangeObserver.start { event ->
+    private fun startObserveNetworkChanges(): NetworkObservationLease {
+        return networkChangeObserver.start { event ->
             logChain("检测到网络变化 原因=${event.reason} from=${event.from} to=${event.to} ip=${event.wifiIpv4 ?: "none"}")
 
             val isWifiIpCompensation = event.reason == "wifi_ip_assigned"
 
             if (!isWifiIpCompensation) {
                 // 接口切换：仅当物理网络切换到 WiFi 或蜂窝时处理。
-                val hasNewNetwork = event.to == NetworkTransport.WIFI || event.to == NetworkTransport.CELLULAR
+                val hasNewNetwork =
+                    event.to == NetworkTransport.WIFI ||
+                        event.to == NetworkTransport.ETHERNET ||
+                        event.to == NetworkTransport.CELLULAR
                 if (!hasNewNetwork) {
                     return@start
                 }

@@ -1050,3 +1050,32 @@
     - 非空但无法解析的命令仍保持 `stopSelf(startId) + START_NOT_STICKY`，继续拦截无效调用。
 - 验证结果：
   - `:app:compileDebugKotlin` 通过。
+
+## 10.58 偶发假连接与数据面自动恢复（2026-07-26）
+- 修复场景：
+  - UI 与 ZeroTier 配置显示已连接，也已获得 `10.10.10.x` 地址，但家中网络无法访问；
+  - 只能从 Android 后台结束进程后重新连接才能恢复；
+  - 同为 Wi-Fi 的底层网络实例变化、半失效 runtime 或陈旧 ARP 缓存均可能触发。
+- 根因收敛：
+  - `RuntimeService.startRuntime()` 只检查 `Node.isInited()`，线程、UDP Socket 或 TUN 已失活时仍返回 `ALREADY_RUNNING`；
+  - `NodeTunTapBridge` 创建时固定绑定 networkId，但旧逻辑允许跨 networkId 热复用；
+  - `VpnService.protect(socket)` 返回 `false` 时旧逻辑仍继续启动，UDP 可能被错误路由回 VPN 自身；
+  - 单例 `RuntimeContext` 的 IPv4 邻居缓存会跨 TUN 会话保留；
+  - 网络监听只比较 Wi-Fi/蜂窝类型，无法识别“Wi-Fi 到另一 Wi-Fi”的 Android `Network` 身份变化。
+- 已完成：
+  - `NodeKernelState` 增加 Socket、protect、worker 线程、TUN bridge 与三项 TUN IO 的真实健康快照；
+  - runtime 复用改为纯决策门禁：Planet 模式、networkId 或核心健康任一不匹配，先完整停止旧 runtime，再冷启动且不携带旧内核快照；
+  - `protect` 缺失、抛异常或返回 `false` 均拒绝启动，并关闭本次新建 Socket；
+  - 隧道建立完成后再次校验完整数据面，校验失败不允许进入成功态；
+  - 复用连接态流量循环执行低频健康检查，发现数据面失活后派发既有 `PhysicalNetworkChanged` 动作，串行完成完整重建；
+  - 网络观察改用 `INTERNET + NOT_RESTRICTED + NOT_VPN` 请求，并以 `Network.networkHandle` 识别真实底层网络实例；
+  - 候选网络只接受已验证链路，按 Wi-Fi / Ethernet / Cellular 选择；同传输类型但 handle 改变也触发重建；
+  - 网络观察会话增加 lease 所有权，旧 Service 销毁不会注销新 Service 已注册的回调；
+  - 新 TUN 绑定、TUN 清理和活动网络离网时清空 IPv4 邻居缓存。
+- 测试：
+  - 新增 runtime 复用决策测试，覆盖同网络复用、跨网络、未知旧网络、Planet 模式变化和核心失活；
+  - 新增内核健康测试，覆盖 `protect(false)` 资源回收与 worker/Socket 实际状态；
+  - 新增网络观察纯 JVM 测试，覆盖 owner 竞态、同类型 identity 变化、重复去重、Wi-Fi 优先级和断网恢复。
+- 验证结果：
+  - `:app:testDebugUnitTest` 通过；
+  - `:app:compileDebugKotlin` 通过。

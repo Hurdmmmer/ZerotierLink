@@ -138,35 +138,46 @@ class RuntimeService @Inject constructor(
         val existingRuntime = runtimeRef.get()
         var existingKernelStateForStart: NodeKernelState? = existingRuntime?.readKernelState()
 
-        // 第一步：检查节点是否已经初始化并正在运行
-        if (existingRuntime?.isInited() == true) {
+        // 第一步：已有对象不等于可复用。线程退出、Socket 关闭或网络 ID 变化后，
+        // 引用仍可能存在；若继续热复用，UI 会进入 Connected，但数据面仍绑定旧网络
+        // 或已经停止。所有非 REUSE 分支都必须先完整 stop，并禁止携带旧快照冷启动。
+        if (existingRuntime != null) {
+            val currentNetworkId = runtimeContext.activeNetworkId()?.toNetworkIdOrNull()
             val startedWithCustomPlanet = runtimeCustomPlanetRef.get()
-            val shouldRestartForPlanetModeSwitch = startedWithCustomPlanet != null &&
-                startedWithCustomPlanet != useCustomPlanet
-            if (shouldRestartForPlanetModeSwitch) {
-                logChain(
-                    "检测到 Planet 链路模式变更，执行 Runtime 重启 oldCustom=$startedWithCustomPlanet newCustom=$useCustomPlanet",
-                )
-                stopRuntimeInternal(
-                    runtime = existingRuntime,
-                    keepServiceAlive = true,
-                )
-                existingKernelStateForStart = null
-            } else {
-            // 如果已在运行，尝试解析当前应激活的网络
-                val activeNetwork = targetNetworkId ?: runtimeContext.activeNetworkId()?.toNetworkIdOrNull()
+            val kernelState = existingRuntime.readKernelState()
+            val reuseDecision = decideRuntimeReuse(
+                currentNetworkId = currentNetworkId,
+                targetNetworkId = targetNetworkId,
+                planetModeMatches = startedWithCustomPlanet == useCustomPlanet,
+                kernelAlive = kernelState.kernelAlive,
+            )
+            if (reuseDecision == RuntimeReuseDecision.REUSE) {
+                val activeNetwork = targetNetworkId ?: currentNetworkId
                 runtimeContext.setActiveNetworkId(activeNetwork?.toLongId())
-
                 return@withLock RuntimeResult.start(
                     activeNetworkId = activeNetwork,
                     nodeReady = true,
-                    tunnelReady = existingRuntime.readKernelState().vpnSocket != null,
+                    tunnelReady = kernelState.tunnelAlive,
                     resultCode = RuntimeResultCode.ALREADY_RUNNING,
                     message = "Runtime already running.",
                 ).also {
-                    logChain("Runtime 启动跳过 结果=${it.resultCode} 当前网络=${activeNetwork?.value ?: "none"}")
+                    logChain(
+                        "Runtime 启动跳过 结果=${it.resultCode} 当前网络=${activeNetwork?.value ?: "none"} " +
+                            "内核健康=${kernelState.kernelAlive} 隧道健康=${kernelState.tunnelAlive}",
+                    )
                 }
             }
+            logChain(
+                "检测到 Runtime 不可复用，执行完整重启 原因=$reuseDecision " +
+                    "当前网络=${currentNetworkId?.value ?: "none"} 目标网络=${targetNetworkId?.value ?: "none"} " +
+                    "内核健康=${kernelState.kernelAlive} oldCustom=${startedWithCustomPlanet ?: "unknown"} " +
+                    "newCustom=$useCustomPlanet",
+            )
+            stopRuntimeInternal(
+                runtime = existingRuntime,
+                keepServiceAlive = true,
+            )
+            existingKernelStateForStart = null
         }
 
         if (useCustomPlanet && !planetFileStore.hasCustomPlanetFile()) {
@@ -385,6 +396,7 @@ class RuntimeService @Inject constructor(
                     val activeNetworkBeforeLeave = runtimeContext.activeNetworkId()
                     if (activeNetworkBeforeLeave == targetNetworkId) {
                         runtimeContext.setActiveNetworkId(null)
+                        runtimeContext.clearNeighborCache()
                     }
                     runtimeContext.activeNetworkId() == null
                 },
@@ -399,6 +411,7 @@ class RuntimeService @Inject constructor(
         val activeNetworkBeforeLeave = runtimeContext.activeNetworkId()
         if (mapped.isSuccess && (noNetworksLeft || activeNetworkBeforeLeave == targetNetworkId)) {
             runtimeContext.setActiveNetworkId(null)
+            runtimeContext.clearNeighborCache()
         }
         return@withLock RuntimeResult.leave(
             noNetworksLeft = noNetworksLeft,
@@ -588,6 +601,9 @@ class RuntimeService @Inject constructor(
             try {
                 runtime.attachTunnelIo(vpnSocket, input, output)
                 runtimeContext.bindTunnelIo(input, output)
+                check(runtime.isHealthy(requireTunnel = true)) {
+                    "Runtime data plane is unhealthy after attaching tunnel IO."
+                }
             } catch (error: Throwable) {
                 closeQuietly(output)
                 closeQuietly(input)
@@ -755,13 +771,23 @@ class RuntimeService @Inject constructor(
         val runtime = runtimeRef.get()
         val runtimeSnapshot = runtime?.readKernelState()
         return NodeState(
-            nodeReady = runtime?.isInited() == true,
-            tunnelReady = runtimeSnapshot?.vpnSocket != null,
-            vpnSocketReady = runtimeSnapshot?.vpnSocket != null,
+            nodeReady = runtimeSnapshot?.kernelAlive == true,
+            tunnelReady = runtimeSnapshot?.tunnelAlive == true,
+            vpnSocketReady = runtimeSnapshot?.vpnFdValid == true,
             activeNetworkId = runtimeContext.activeNetworkId()?.toNetworkIdOrNull(),
             monitorOnlyMode = monitorOnlyModeRef.get(),
             lastError = lastErrorRef.get(),
         )
+    }
+
+    /**
+     * 检查当前 runtime 的真实数据面健康状态。
+     *
+     * @param requireTunnel 是否要求 Android TUN 文件描述符同时有效。
+     * @return Node、Socket、核心 worker，以及可选 TUN 均存活时返回 true。
+     */
+    fun isRuntimeHealthy(requireTunnel: Boolean): Boolean {
+        return runtimeRef.get()?.isHealthy(requireTunnel) == true
     }
 
     /**

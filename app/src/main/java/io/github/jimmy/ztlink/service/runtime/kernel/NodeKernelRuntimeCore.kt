@@ -30,7 +30,35 @@ data class NodeKernelState(
     val nodeCreatedAtStart: Boolean,
     val nodeAddress: Long?,
     val nodeInited: Boolean,
-)
+    val socketOpen: Boolean,
+    val socketProtected: Boolean,
+    val vpnThreadAlive: Boolean,
+    val udpThreadAlive: Boolean,
+    val tunTapBridgeAlive: Boolean,
+    val vpnFdValid: Boolean,
+) {
+    /**
+     * Node 与物理链路的数据面是否仍可工作。
+     *
+     * 这里必须检查资源的实际状态，不能仅凭对象引用存在判断运行时可复用；
+     * 线程异常退出或 Socket 被关闭后，引用仍然存在，但数据面已经无法转发。
+     */
+    val kernelAlive: Boolean
+        get() = nodeInited &&
+            socketOpen &&
+            socketProtected &&
+            vpnThreadAlive &&
+            udpThreadAlive &&
+            tunTapBridgeAlive
+
+    /**
+     * Android TUN 数据面是否完整可用。
+     *
+     * TUN 尚未建立时该值为 false，调用方可根据当前生命周期决定是否要求此门禁。
+     */
+    val tunnelAlive: Boolean
+        get() = kernelAlive && vpnFdValid
+}
 
 /**
  * Node Kernel Runtime 实体。
@@ -51,6 +79,7 @@ class NodeKernelRuntimeCore (
     input: FileInputStream?,
     output: FileOutputStream?,
     nodeCreatedAtStart: Boolean,
+    socketProtected: Boolean = false,
 ) {
 
     /** 启动时是否创建了新 Node。 */
@@ -82,6 +111,9 @@ class NodeKernelRuntimeCore (
 
     /** 当前 VPN 输出流句柄。 */
     private var outputRef: FileOutputStream? = output
+
+    /** 当前 UDP Socket 是否已成功从 VPN 路由中排除。 */
+    private val socketProtectedRef: Boolean = socketProtected
 
     /**
      * 更新 runtime 持有的 VPN IO 资源。
@@ -200,6 +232,18 @@ class NodeKernelRuntimeCore (
      * @return 初始化状态。
      */
     fun isInited(): Boolean = nodeRef?.isInited() == true
+
+    /**
+     * 判断当前运行时能否安全复用。
+     *
+     * @param requireTunnel 是否要求 Android TUN FD 同时有效；Node 冷启动但尚未建立
+     * TUN 时应传 false，已连接状态应传 true。
+     * @return 所有必需数据面资源均真实存活时返回 true。
+     */
+    fun isHealthy(requireTunnel: Boolean): Boolean {
+        val state = readKernelState()
+        return if (requireTunnel) state.tunnelAlive else state.kernelAlive
+    }
 
     /**
      * 执行后台任务处理。
@@ -321,20 +365,53 @@ class NodeKernelRuntimeCore (
      */
     fun readKernelState(): NodeKernelState {
         val node = nodeRef
+        val socket = socketRef
+        val vpnThread = vpnThreadRef
+        val udpThread = udpThreadRef
+        val tunTapBridge = tunTapBridgeRef
+        val vpnSocket = vpnSocketRef
         return NodeKernelState(
-            socket = socketRef,
+            socket = socket,
             udpBridge = udpBridgeRef,
-            tunTapBridge = tunTapBridgeRef,
+            tunTapBridge = tunTapBridge,
             node = node,
-            vpnThread = vpnThreadRef,
-            udpThread = udpThreadRef,
-            vpnSocket = vpnSocketRef,
+            vpnThread = vpnThread,
+            udpThread = udpThread,
+            vpnSocket = vpnSocket,
             input = inputRef,
             output = outputRef,
             nodeCreatedAtStart = nodeCreatedAtStartRef,
             nodeAddress = node?.address(),
             nodeInited = node?.isInited == true,
+            socketOpen = socket?.isClosed == false,
+            socketProtected = socketProtectedRef,
+            vpnThreadAlive = vpnThread?.isAlive == true,
+            udpThreadAlive = udpThread?.isAlive == true,
+            tunTapBridgeAlive = runCatching { tunTapBridge?.isRunning() == true }.getOrDefault(false),
+            vpnFdValid = isTunnelIoValid(
+                vpnSocket = vpnSocket,
+                input = inputRef,
+                output = outputRef,
+            ),
         )
+    }
+
+    /**
+     * 检查 TUN 及双向 IO 是否完整有效。
+     *
+     * 只检查 ParcelFileDescriptor 会漏掉输入流或输出流被单独关闭的半失效状态。
+     * 任意句柄关闭或读取 FD 抛异常都降级为 false，不能让诊断反向击穿服务主流程。
+     */
+    private fun isTunnelIoValid(
+        vpnSocket: ParcelFileDescriptor?,
+        input: FileInputStream?,
+        output: FileOutputStream?,
+    ): Boolean {
+        return runCatching {
+            vpnSocket?.fileDescriptor?.valid() == true &&
+                input?.fd?.valid() == true &&
+                output?.fd?.valid() == true
+        }.getOrDefault(false)
     }
 
     /**
@@ -412,6 +489,7 @@ class NodeKernelRuntimeCore (
          * 3. 返回值始终是“可直接运行”的 runtime 实例。
          */
         fun start(config: KernelRuntimeStartConfig): NodeKernelRuntimeCore {
+            val createdSocket = config.existingSocket == null
             val socket = config.existingSocket ?: createSocket(
                 bindPort = config.bindPort,
                 socketTimeoutMs = config.socketTimeoutMs,
@@ -423,18 +501,30 @@ class NodeKernelRuntimeCore (
             // 捕获并映射为可恢复的 RUNTIME_START_FAILED，而不是制造一个静默不通的 socket。
             val protector = config.socketProtector
             if (protector == null) {
-                if (config.existingSocket == null) {
+                if (createdSocket) {
                     runCatching { socket.close() }
                 }
                 throw IllegalStateException(
                     "socketProtector is null; refusing to start runtime with an unprotected UDP socket",
                 )
             }
-            val protectedOk = protector.invoke(socket)
+            val protectedOk = try {
+                protector.invoke(socket)
+            } catch (error: Throwable) {
+                if (createdSocket) {
+                    runCatching { socket.close() }
+                }
+                throw IllegalStateException(
+                    "VpnService.protect failed for ZeroTier UDP socket",
+                    error,
+                )
+            }
             if (!protectedOk) {
-                ChainLog.w(
-                    TAG,
-                    "VpnService.protect 返回 false，UDP socket 可能被错误路由进 VPN bindPort=${config.bindPort}",
+                if (createdSocket) {
+                    runCatching { socket.close() }
+                }
+                throw IllegalStateException(
+                    "VpnService.protect returned false; refusing to start runtime with an unprotected UDP socket",
                 )
             }
 
@@ -471,6 +561,7 @@ class NodeKernelRuntimeCore (
                 input = config.existingInput,
                 output = config.existingOutput,
                 nodeCreatedAtStart = nodeCreatedAtStart,
+                socketProtected = true,
             )
         }
 

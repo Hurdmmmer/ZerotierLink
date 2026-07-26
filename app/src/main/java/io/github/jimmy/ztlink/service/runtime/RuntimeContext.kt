@@ -259,6 +259,10 @@ class RuntimeContext @Inject constructor(
         input: FileInputStream?,
         output: FileOutputStream?,
     ) {
+        // 每个新 TUN 都代表新的数据面会话。旧会话学习到的 IP -> MAC 映射不能跨
+        // 隧道复用，否则网关或节点 MAC 变化后会持续向陈旧目的 MAC 发包，且只有
+        // 杀进程才能清空单例 RuntimeContext 中的缓存。
+        clearNeighborCache()
         tunInputRef.set(input)
         tunOutputRef.set(output)
         notifyTunInputChanged()
@@ -270,7 +274,20 @@ class RuntimeContext @Inject constructor(
     fun clearTunnelIo() {
         tunInputRef.set(null)
         tunOutputRef.set(null)
+        clearNeighborCache()
         notifyTunInputChanged()
+    }
+
+    /**
+     * 清空当前数据面学习到的 IPv4 邻居缓存。
+     *
+     * 邻居映射只能在一个 TUN/runtime 生命周期内复用。隧道重建或 runtime 停止后，
+     * 旧映射已经失去有效性，继续持有会把数据发送到陈旧 MAC。
+     */
+    fun clearNeighborCache() {
+        ipv4MacTableLock.withLock {
+            ipv4MacTable.clear()
+        }
     }
 
     /**

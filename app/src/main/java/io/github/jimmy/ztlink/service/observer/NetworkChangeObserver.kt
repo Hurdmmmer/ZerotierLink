@@ -2,10 +2,13 @@ package io.github.jimmy.ztlink.service.observer
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.net.Inet4Address
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -24,7 +27,7 @@ enum class NetworkTransport {
 /**
  * 网络变化事件。
  *
- * @property reason 触发原因（仅用于 Wi-Fi/蜂窝切换）。
+ * @property reason 触发原因。
  * @property from 切换前传输类型。
  * @property to 切换后传输类型。
  */
@@ -45,6 +48,16 @@ data class WifiIpv4Info(
 )
 
 /**
+ * 一次网络观察会话的所有权凭据。
+ *
+ * 单例观察器可能先后被多个 VpnService 实例使用。停止时必须带上启动返回的凭据，
+ * 避免旧 Service 的 onDestroy 注销新 Service 已经注册的回调。
+ */
+class NetworkObservationLease internal constructor(
+    internal val id: Long,
+)
+
+/**
  * 网络变化监听器。
  */
 fun interface NetworkChangeListener {
@@ -60,173 +73,373 @@ fun interface NetworkChangeListener {
 }
 
 /**
+ * 纯逻辑所有权状态机。
+ *
+ * 把 Android 回调注册之外的 generation 判断单独建模，确保旧 owner 无法释放或派发
+ * 新 owner 的观察会话，并允许纯 JVM 单元测试覆盖竞态约束。
+ */
+internal class ObservationOwnership<T> {
+
+    private var nextId: Long = 0L
+    private var activeLease: NetworkObservationLease? = null
+    private var activeResource: T? = null
+
+    /**
+     * 获取新所有权，并使旧所有权立即失效。
+     *
+     * @return 新 lease 与需要由调用方释放的旧资源。
+     */
+    @Synchronized
+    fun acquire(resource: T): Pair<NetworkObservationLease, T?> {
+        val previousResource = activeResource
+        val lease = NetworkObservationLease(id = ++nextId)
+        activeLease = lease
+        activeResource = resource
+        return lease to previousResource
+    }
+
+    /**
+     * 仅允许当前 owner 释放资源。
+     */
+    @Synchronized
+    fun release(lease: NetworkObservationLease): T? {
+        if (activeLease != lease) {
+            return null
+        }
+        val resource = activeResource
+        activeLease = null
+        activeResource = null
+        return resource
+    }
+
+    /**
+     * 判断回调是否仍属于当前观察会话。
+     */
+    @Synchronized
+    fun isActive(lease: NetworkObservationLease): Boolean = activeLease == lease
+}
+
+/**
+ * 底层网络身份。
+ *
+ * Android [Network] 的 handle 表示具体网络实例。传输类型相同但 handle 改变时，
+ * 原 UDP Socket 仍可能绑定在旧路径上，因此也必须视为网络切换。
+ */
+internal data class UnderlyingNetworkIdentity(
+    val handle: Long,
+    val transport: NetworkTransport,
+)
+
+/**
+ * 底层网络切换判定器。
+ */
+internal class UnderlyingNetworkTransitionTracker {
+
+    private var lastIdentity: UnderlyingNetworkIdentity? = null
+
+    /**
+     * 初始化当前网络，不产生启动事件。
+     */
+    fun reset(identity: UnderlyingNetworkIdentity?) {
+        lastIdentity = identity
+    }
+
+    /**
+     * 更新网络身份；无网络过渡只更新状态，不向上层制造恢复噪声。
+     */
+    fun update(identity: UnderlyingNetworkIdentity?): NetworkChangeEvent? {
+        val previous = lastIdentity
+        if (previous == identity) {
+            return null
+        }
+        lastIdentity = identity
+        identity ?: return null
+        val reason = if (previous?.transport == identity.transport) {
+            "${identity.transport.name.lowercase()}_network_changed"
+        } else {
+            "${(previous?.transport ?: NetworkTransport.NONE).name.lowercase()}_to_" +
+                identity.transport.name.lowercase()
+        }
+        return NetworkChangeEvent(
+            reason = reason,
+            from = previous?.transport ?: NetworkTransport.NONE,
+            to = identity.transport,
+        )
+    }
+}
+
+/**
  * Android 网络变化观察器。
  *
  * 约束：
- * 1. 只产出 Wi-Fi <-> 蜂窝 两类切换事件；
- * 2. 忽略 capabilities/linkProperties 的同传输抖动；
- * 3. 忽略 NONE/UNKNOWN/VPN 过渡，避免内核被噪声事件反复启停。
+ * 1. 只监听具备 INTERNET、NOT_RESTRICTED、NOT_VPN 的真实底层网络；
+ * 2. Android Network identity 变化即派发，不能只比较 Wi-Fi/蜂窝传输类型；
+ * 3. NONE/UNKNOWN/VPN 过渡不派发，避免内核被短暂断网噪声反复启停；
+ * 4. 观察会话使用 lease 隔离，旧 Service 不得停止或派发新 Service 的回调。
  */
 @Singleton
 class NetworkChangeObserver @Inject constructor(
-    @ApplicationContext private val appContext: Context,
+    @param:ApplicationContext private val appContext: Context,
 ) {
+
+    private data class ObservedNetwork(
+        val network: Network,
+        val capabilities: NetworkCapabilities,
+    ) {
+        val identity: UnderlyingNetworkIdentity
+            get() = UnderlyingNetworkIdentity(
+                handle = network.networkHandle,
+                transport = capabilities.toNetworkTransport(),
+            )
+    }
 
     /** 系统连接管理器。 */
     private val connectivityManager: ConnectivityManager =
         appContext.getSystemService(ConnectivityManager::class.java)
 
-    /** 系统 Wi-Fi 管理器。 */
+    /** 系统 Wi-Fi 管理器，仅作为旧设备 IPv4 信息的保守回退。 */
     private val wifiManager: WifiManager =
         appContext.applicationContext.getSystemService(WifiManager::class.java)
 
-    /** 当前回调实例。 */
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    /** 回调与候选网络状态共同使用的锁，防止 Binder 回调和 Service 生命周期并发修改。 */
+    private val stateLock = Any()
 
-    /** 最近一次观察到的传输类型。 */
-    @Volatile
-    private var lastTransport: NetworkTransport = NetworkTransport.UNKNOWN
+    /** 观察会话所有权。 */
+    private val ownership = ObservationOwnership<ConnectivityManager.NetworkCallback>()
+
+    /** 当前满足底层网络约束的候选网络。 */
+    private val observedNetworks = LinkedHashMap<Long, ObservedNetwork>()
+
+    /** 当前底层网络身份切换状态。 */
+    private val transitionTracker = UnderlyingNetworkTransitionTracker()
 
     /**
-     * 最近一次向上层派发的 WiFi IPv4 地址（用于检测 DHCP 完成补偿）。
-     *
-     * 说明：onAvailable 先于 DHCP 触发，IP 可能为 null；DHCP 完成后系统
-     * 通过 onLinkPropertiesChanged 通知，此时需要补偿一次策略检查。
+     * 最近一次向上层派发的 Wi-Fi IPv4 地址，用于 DHCP 完成补偿。
      */
     @Volatile
     private var lastDispatchedWifiIpv4: String? = null
 
     /**
-     * 启动监听。
+     * 只匹配真实底层可联网网络。
      *
-     * @param listener 上层监听器。
+     * NOT_VPN 防止 VpnService 建立后把自身 TUN 当成默认网络；
+     * NOT_RESTRICTED 与 Android 常规默认网络选择语义一致，避免受限后台网络参与切换。
+     */
+    private val underlyingNetworkRequest: NetworkRequest
+        get() = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+
+    /**
+     * 启动监听并返回本次观察会话凭据。
+     *
+     * 新调用会接管单例观察器；旧回调先失效再注销，注销期间到达的迟发回调会被 lease
+     * 校验丢弃。调用方销毁时必须使用返回值调用 [stop]。
      */
     fun start(
         listener: NetworkChangeListener,
-    ) {
-        if (networkCallback != null) {
-            return
+    ): NetworkObservationLease {
+        return synchronized(stateLock) {
+            lateinit var lease: NetworkObservationLease
+            val callback = buildNetworkCallback(
+                listener = listener,
+                isActive = { ownership.isActive(lease) },
+            )
+            val acquired = ownership.acquire(callback)
+            lease = acquired.first
+            unregisterCallback(acquired.second)
+            refreshObservedNetworksLocked()
+            transitionTracker.reset(selectUnderlyingNetworkLocked()?.identity)
+            lastDispatchedWifiIpv4 = currentWifiIpv4InfoLocked()?.address
+            try {
+                connectivityManager.registerNetworkCallback(underlyingNetworkRequest, callback)
+            } catch (error: RuntimeException) {
+                ownership.release(lease)
+                observedNetworks.clear()
+                transitionTracker.reset(null)
+                lastDispatchedWifiIpv4 = null
+                throw error
+            }
+            lease
         }
-        lastTransport = currentTransport()
-        val callback = buildNetworkCallback(listener)
-        networkCallback = callback
-        connectivityManager.registerDefaultNetworkCallback(callback)
     }
 
     /**
-     * 停止监听。
+     * 停止指定观察会话。
+     *
+     * 非当前 lease 表示调用来自旧 Service，必须忽略，不能影响新观察会话。
      */
-    fun stop() {
-        val callback = networkCallback ?: return
-        runCatching {
-            connectivityManager.unregisterNetworkCallback(callback)
+    fun stop(lease: NetworkObservationLease) {
+        val callback = synchronized(stateLock) {
+            val released = ownership.release(lease) ?: return
+            observedNetworks.clear()
+            transitionTracker.reset(null)
+            lastDispatchedWifiIpv4 = null
+            released
         }
-        networkCallback = null
-        lastTransport = NetworkTransport.UNKNOWN
-        lastDispatchedWifiIpv4 = null
+        unregisterCallback(callback)
     }
 
     /**
      * 构建系统网络回调。
-     *
-     * 说明：
-     * - 只要默认网络有变化就触发一次”重新判定是否发生 Wi-Fi/蜂窝切换”；
-     * - 不直接使用回调参数中的 IP，避免把 VPN/TUN 的地址误判为 Wi-Fi IP；
-     * - onLinkPropertiesChanged 额外用于捕获 DHCP 完成：onAvailable 先于 IP
-     *   分配触发，此时 IP 为 0；IP 分配后系统触发 onLinkPropertiesChanged，
-     *   需要派发补偿事件以触发内网策略重检。
      */
-    private fun buildNetworkCallback(listener: NetworkChangeListener): ConnectivityManager.NetworkCallback {
+    private fun buildNetworkCallback(
+        listener: NetworkChangeListener,
+        isActive: () -> Boolean,
+    ): ConnectivityManager.NetworkCallback {
         return object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                dispatchIfWifiCellularSwitched(listener)
+                if (!isActive()) {
+                    return
+                }
+                val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return
+                updateObservedNetwork(network, capabilities, listener, isActive)
             }
 
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                dispatchIfWifiCellularSwitched(listener)
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities,
+            ) {
+                updateObservedNetwork(network, networkCapabilities, listener, isActive)
             }
 
             override fun onLost(network: Network) {
-                dispatchIfWifiCellularSwitched(listener)
+                if (!isActive()) {
+                    return
+                }
+                val event = synchronized(stateLock) {
+                    if (!isActive()) {
+                        return@synchronized null
+                    }
+                    observedNetworks.remove(network.networkHandle)
+                    buildTransitionEventLocked()
+                }
+                event?.let(listener::onNetworkChanged)
             }
 
             override fun onLinkPropertiesChanged(
                 network: Network,
-                linkProperties: android.net.LinkProperties,
+                linkProperties: LinkProperties,
             ) {
-                dispatchIfWifiIpAssigned(listener)
+                if (!isActive()) {
+                    return
+                }
+                val event = synchronized(stateLock) {
+                    if (!isActive() || selectUnderlyingNetworkLocked()?.network != network) {
+                        return@synchronized null
+                    }
+                    buildWifiIpEventLocked(linkProperties)
+                }
+                event?.let(listener::onNetworkChanged)
             }
         }
     }
 
     /**
-     * 在网络接口切换到 Wi-Fi 或蜂窝时派发事件。
-     *
-     * 修复说明：
-     * 原逻辑仅识别"直接 WiFi↔蜂窝"切换，忽略了 Android 切换时常见的
-     * WiFi→NONE→蜂窝（或反向）中间过渡。此处改为：只要当前网络变为
-     * WiFi 或蜂窝（即有真实物理接口可用），就派发事件，让上层重建 UDP Socket。
+     * 更新候选网络并根据 Android Network identity 判定是否切换。
      */
-    private fun dispatchIfWifiCellularSwitched(listener: NetworkChangeListener) {
-        val previous = lastTransport
-        val current = currentTransport()
-        if (previous == current) {
+    private fun updateObservedNetwork(
+        network: Network,
+        capabilities: NetworkCapabilities,
+        listener: NetworkChangeListener,
+        isActive: () -> Boolean,
+    ) {
+        if (!isActive()) {
             return
         }
-        lastTransport = current
-        if (current != NetworkTransport.WIFI && current != NetworkTransport.CELLULAR) {
-            return
+        val event = synchronized(stateLock) {
+            if (!isActive()) {
+                return@synchronized null
+            }
+            if (capabilities.isEligibleUnderlyingNetwork()) {
+                observedNetworks[network.networkHandle] = ObservedNetwork(network, capabilities)
+            } else {
+                observedNetworks.remove(network.networkHandle)
+            }
+            buildTransitionEventLocked()
         }
-        val wifiInfo = if (current == NetworkTransport.WIFI) currentWifiIpv4Info() else null
+        event?.let(listener::onNetworkChanged)
+    }
+
+    /**
+     * 构建切换事件并补充 Wi-Fi 地址。
+     */
+    private fun buildTransitionEventLocked(): NetworkChangeEvent? {
+        val selected = selectUnderlyingNetworkLocked()
+        val event = transitionTracker.update(selected?.identity) ?: return null
+        val wifiInfo = if (event.to == NetworkTransport.WIFI) currentWifiIpv4InfoLocked() else null
         lastDispatchedWifiIpv4 = wifiInfo?.address
-        val reason = "${previous.name.lowercase()}_to_${current.name.lowercase()}"
         android.util.Log.d(
-            "NetworkChangeObserver",
-            "Network change: $reason, from=$previous, to=$current, ip=${wifiInfo?.address},prefix=${wifiInfo?.prefixLength}",
+            LOG_TAG,
+            "Underlying network changed: reason=${event.reason}, from=${event.from}, " +
+                "to=${event.to}, handle=${selected?.network?.networkHandle}, ip=${wifiInfo?.address}",
         )
-        listener.onNetworkChanged(
-            NetworkChangeEvent(
-                reason = reason,
-                from = previous,
-                to = current,
-                wifiIpv4 = wifiInfo?.address,
-                wifiPrefixLength = wifiInfo?.prefixLength,
-            ),
+        return event.copy(
+            wifiIpv4 = wifiInfo?.address,
+            wifiPrefixLength = wifiInfo?.prefixLength,
         )
     }
 
     /**
-     * DHCP 完成补偿：当 WiFi IP 从无到有时，派发策略补偿事件。
-     *
-     * 说明：
-     * 1. onAvailable 触发时 IP 可能尚未分配（rawIp==0），此时内网策略检查
-     *    无法判断是否命中，需要在 IP 分配后（onLinkPropertiesChanged）补检一次；
-     * 2. 补偿事件 from=WIFI, to=WIFI，用于标记"仅策略重检，不需重建 Socket"；
-     * 3. 若 IP 未改变则忽略，防止 onLinkPropertiesChanged 频繁触发时产生噪声。
+     * DHCP 完成补偿：当前 Wi-Fi 地址新增或改变时派发策略复检。
      */
-    private fun dispatchIfWifiIpAssigned(listener: NetworkChangeListener) {
-        if (currentTransport() != NetworkTransport.WIFI) {
-            return
-        }
-        val wifiInfo = currentWifiIpv4Info() ?: return
+    private fun buildWifiIpEventLocked(linkProperties: LinkProperties): NetworkChangeEvent? {
+        val wifiInfo = linkProperties.toWifiIpv4Info() ?: currentWifiIpv4InfoLocked() ?: return null
         val previousIp = lastDispatchedWifiIpv4
         if (wifiInfo.address == previousIp) {
-            return
+            return null
         }
         lastDispatchedWifiIpv4 = wifiInfo.address
         android.util.Log.d(
-            "NetworkChangeObserver",
+            LOG_TAG,
             "WiFi IP assigned/changed: prev=$previousIp new=${wifiInfo.address}/${wifiInfo.prefixLength}",
         )
-        listener.onNetworkChanged(
-            NetworkChangeEvent(
-                reason = "wifi_ip_assigned",
-                from = NetworkTransport.WIFI,
-                to = NetworkTransport.WIFI,
-                wifiIpv4 = wifiInfo.address,
-                wifiPrefixLength = wifiInfo.prefixLength,
-            ),
+        return NetworkChangeEvent(
+            reason = "wifi_ip_assigned",
+            from = NetworkTransport.WIFI,
+            to = NetworkTransport.WIFI,
+            wifiIpv4 = wifiInfo.address,
+            wifiPrefixLength = wifiInfo.prefixLength,
         )
+    }
+
+    /**
+     * 刷新系统当前真实底层网络，供启动快照和同步查询使用。
+     */
+    @Suppress("DEPRECATION")
+    private fun refreshObservedNetworksLocked() {
+        observedNetworks.clear()
+        connectivityManager.allNetworks.forEach { network ->
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@forEach
+            if (capabilities.isEligibleUnderlyingNetwork()) {
+                observedNetworks[network.networkHandle] = ObservedNetwork(network, capabilities)
+            }
+        }
+    }
+
+    /**
+     * 选择当前底层网络。
+     *
+     * 按 Wi-Fi、Ethernet、Cellular 的稳定优先级选择。不能无条件保留旧 identity：
+     * 蜂窝与新 Wi-Fi 常会短暂并存，若继续保留蜂窝，会漏掉系统恢复 Wi-Fi 的默认路径切换。
+     * 同类型以稳定 handle 排序，使候选集合未变化时选择结果保持一致。
+     */
+    private fun selectUnderlyingNetworkLocked(): ObservedNetwork? {
+        return selectPreferredUnderlyingNetwork(
+            candidates = observedNetworks.values,
+            identityOf = ObservedNetwork::identity,
+        )
+    }
+
+    /**
+     * 返回当前观察到的真实底层传输类型。
+     */
+    fun currentTransport(): NetworkTransport = synchronized(stateLock) {
+        refreshObservedNetworksLocked()
+        val selected = selectUnderlyingNetworkLocked()
+        selected?.identity?.transport ?: NetworkTransport.NONE
     }
 
     /**
@@ -237,65 +450,65 @@ class NetworkChangeObserver @Inject constructor(
     /**
      * 读取当前 Wi-Fi IPv4 信息。
      *
-     * 说明：
-     * 1. 仅在当前传输为 Wi-Fi 时返回；
-     * 2. 只从系统 Wi-Fi 信息读取地址，明确排除 VPN/TUN 虚拟网卡地址。
+     * 优先读取所选真实 Wi-Fi Network 的 LinkProperties，避免 VPN/TUN 地址混入；
+     * WifiManager 仅用于系统暂未提供 LinkProperties 时的兼容回退。
      */
     @Suppress("DEPRECATION")
     fun currentWifiIpv4Info(
         observedNetwork: Network? = null,
         observedCapabilities: NetworkCapabilities? = null,
-        observedLinkProperties: android.net.LinkProperties? = null,
+        observedLinkProperties: LinkProperties? = null,
         preferObservedNetwork: Boolean = true,
-    ): WifiIpv4Info? {
-        if (currentTransport() != NetworkTransport.WIFI) {
+    ): WifiIpv4Info? = synchronized(stateLock) {
+        val observedIsWifi = observedCapabilities
+            ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+            ?: false
+        if (preferObservedNetwork && observedNetwork != null && observedIsWifi) {
+            observedLinkProperties?.toWifiIpv4Info()?.let { return@synchronized it }
+            connectivityManager.getLinkProperties(observedNetwork)
+                ?.toWifiIpv4Info()
+                ?.let { return@synchronized it }
+        }
+        refreshObservedNetworksLocked()
+        currentWifiIpv4InfoLocked()
+    }
+
+    /**
+     * 在持锁状态下读取当前真实 Wi-Fi 地址。
+     */
+    @Suppress("DEPRECATION")
+    private fun currentWifiIpv4InfoLocked(): WifiIpv4Info? {
+        val selected = selectUnderlyingNetworkLocked() ?: return null
+        if (selected.identity.transport != NetworkTransport.WIFI) {
             return null
         }
-        val wifiInfo = wifiManager.connectionInfo ?: return null
-        val rawIp = wifiInfo.ipAddress
+        connectivityManager.getLinkProperties(selected.network)
+            ?.toWifiIpv4Info()
+            ?.let { return it }
+        val rawIp = wifiManager.connectionInfo?.ipAddress ?: return null
         if (rawIp == 0) {
             return null
         }
-        val address = formatLittleEndianIpv4(rawIp)
-        val prefixLength = resolveWifiPrefixLength()
         return WifiIpv4Info(
-            address = address,
-            prefixLength = prefixLength,
+            address = formatLittleEndianIpv4(rawIp),
+            prefixLength = resolveWifiPrefixLength(),
         )
     }
 
     /**
-     * 返回当前观察到的传输类型。
-     *
-     * 说明：
-     * 1. 优先通过 activeNetworkInfo 获取当前“对应用可见”的默认网络类型；
-     * 2. 仅区分 Wi-Fi 与蜂窝，其他统一视为 NONE（策略层不处理）。
+     * 注销回调。重复注销和系统生命周期竞态不应破坏后续新会话。
      */
-    @Suppress("DEPRECATION")
-    fun currentTransport(): NetworkTransport {
-        val activeInfo = connectivityManager.activeNetworkInfo
-        if (activeInfo != null && activeInfo.isConnected) {
-            return when (activeInfo.type) {
-                ConnectivityManager.TYPE_WIFI -> NetworkTransport.WIFI
-                ConnectivityManager.TYPE_MOBILE -> NetworkTransport.CELLULAR
-                else -> NetworkTransport.NONE
-            }
-        }
-        val activeNetwork = connectivityManager.activeNetwork ?: return NetworkTransport.NONE
-        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return NetworkTransport.NONE
-        return when {
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkTransport.WIFI
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkTransport.CELLULAR
-            else -> NetworkTransport.NONE
+    private fun unregisterCallback(callback: ConnectivityManager.NetworkCallback?) {
+        callback ?: return
+        runCatching {
+            connectivityManager.unregisterNetworkCallback(callback)
+        }.onFailure { error ->
+            android.util.Log.w(LOG_TAG, "Failed to unregister network callback", error)
         }
     }
 
     /**
      * 解析 Wi-Fi 前缀长度。
-     *
-     * 说明：
-     * 1. 先用 DHCP netmask；
-     * 2. 失败则回退 /24，满足当前“同网段判断”需求。
      */
     @Suppress("DEPRECATION")
     private fun resolveWifiPrefixLength(): Int {
@@ -316,4 +529,74 @@ class NetworkChangeObserver @Inject constructor(
         val b4 = raw shr 24 and 0xFF
         return "$b1.$b2.$b3.$b4"
     }
+
+    private companion object {
+        const val LOG_TAG: String = "NetworkChangeObserver"
+    }
+}
+
+/**
+ * 判断能力是否可作为真实底层网络。
+ */
+private fun NetworkCapabilities.isEligibleUnderlyingNetwork(): Boolean {
+    val hasSupportedTransport =
+        hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+            hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+    return hasSupportedTransport &&
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED) &&
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+}
+
+/**
+ * 转换传输类型。
+ */
+private fun NetworkCapabilities.toNetworkTransport(): NetworkTransport {
+    return when {
+        hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkTransport.WIFI
+        hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkTransport.ETHERNET
+        hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkTransport.CELLULAR
+        hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> NetworkTransport.VPN
+        else -> NetworkTransport.UNKNOWN
+    }
+}
+
+/**
+ * 真实底层网络稳定选择优先级。
+ */
+private fun NetworkTransport.selectionPriority(): Int {
+    return when (this) {
+        NetworkTransport.WIFI -> 3
+        NetworkTransport.ETHERNET -> 2
+        NetworkTransport.CELLULAR -> 1
+        else -> 0
+    }
+}
+
+/**
+ * 从候选集合选择稳定的首选底层网络。
+ *
+ * 泛型形式让网络优先级无需构造 Android Framework 对象即可通过纯 JVM 测试。
+ */
+internal fun <T> selectPreferredUnderlyingNetwork(
+    candidates: Collection<T>,
+    identityOf: (T) -> UnderlyingNetworkIdentity,
+): T? {
+    return candidates.maxWithOrNull(
+        compareBy<T> { identityOf(it).transport.selectionPriority() }
+            .thenBy { identityOf(it).handle },
+    )
+}
+
+/**
+ * 从真实网络链路属性提取 IPv4 地址。
+ */
+private fun LinkProperties.toWifiIpv4Info(): WifiIpv4Info? {
+    val linkAddress = linkAddresses.firstOrNull { it.address is Inet4Address } ?: return null
+    return WifiIpv4Info(
+        address = linkAddress.address.hostAddress ?: return null,
+        prefixLength = linkAddress.prefixLength,
+    )
 }
