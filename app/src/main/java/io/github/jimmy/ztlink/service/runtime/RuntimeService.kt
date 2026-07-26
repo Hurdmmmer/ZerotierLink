@@ -771,23 +771,13 @@ class RuntimeService @Inject constructor(
         val runtime = runtimeRef.get()
         val runtimeSnapshot = runtime?.readKernelState()
         return NodeState(
-            nodeReady = runtimeSnapshot?.kernelAlive == true,
-            tunnelReady = runtimeSnapshot?.tunnelAlive == true,
-            vpnSocketReady = runtimeSnapshot?.vpnFdValid == true,
+            nodeReady = runtime?.isInited() == true,
+            tunnelReady = runtimeSnapshot?.vpnSocket != null,
+            vpnSocketReady = runtimeSnapshot?.vpnSocket != null,
             activeNetworkId = runtimeContext.activeNetworkId()?.toNetworkIdOrNull(),
             monitorOnlyMode = monitorOnlyModeRef.get(),
             lastError = lastErrorRef.get(),
         )
-    }
-
-    /**
-     * 检查当前 runtime 的真实数据面健康状态。
-     *
-     * @param requireTunnel 是否要求 Android TUN 文件描述符同时有效。
-     * @return Node、Socket、核心 worker，以及可选 TUN 均存活时返回 true。
-     */
-    fun isRuntimeHealthy(requireTunnel: Boolean): Boolean {
-        return runtimeRef.get()?.isHealthy(requireTunnel) == true
     }
 
     /**

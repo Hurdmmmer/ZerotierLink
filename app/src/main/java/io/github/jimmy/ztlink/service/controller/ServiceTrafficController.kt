@@ -28,8 +28,6 @@ class ServiceTrafficController(
     private val rxBytesProvider: () -> Long,
     private val isForegroundStarted: () -> Boolean,
     private val isScreenInteractive: () -> Boolean,
-    private val isRuntimeHealthy: () -> Boolean,
-    private val onRuntimeUnhealthy: suspend () -> Unit,
 ) {
 
     /** 流量观察任务。 */
@@ -55,13 +53,6 @@ class ServiceTrafficController(
                     return@collectLatest
                 }
                 while (currentCoroutineContext().isActive) {
-                    // Connected 只是状态机结论，不能证明 UDP/TUN 后台线程仍在工作。
-                    // 复用现有低频流量循环做健康门禁，避免新增常驻定时器；一旦发现
-                    // 数据面失活，立即退出本轮并交给服务动作队列串行完成完整重建。
-                    if (!isRuntimeHealthy()) {
-                        onRuntimeUnhealthy()
-                        return@collectLatest
-                    }
                     if (!isForegroundStarted()) {
                         delay(BACKGROUND_REFRESH_DELAY_MS)
                         continue

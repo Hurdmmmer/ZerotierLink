@@ -1067,11 +1067,14 @@
   - runtime 复用改为纯决策门禁：Planet 模式、networkId 或核心健康任一不匹配，先完整停止旧 runtime，再冷启动且不携带旧内核快照；
   - `protect` 缺失、抛异常或返回 `false` 均拒绝启动，并关闭本次新建 Socket；
   - 隧道建立完成后再次校验完整数据面，校验失败不允许进入成功态；
-  - 复用连接态流量循环执行低频健康检查，发现数据面失活后派发既有 `PhysicalNetworkChanged` 动作，串行完成完整重建；
   - 网络观察改用 `INTERNET + NOT_RESTRICTED + NOT_VPN` 请求，并以 `Network.networkHandle` 识别真实底层网络实例；
-  - 候选网络只接受已验证链路，按 Wi-Fi / Ethernet / Cellular 选择；同传输类型但 handle 改变也触发重建；
+  - 候选网络按 Wi-Fi / Ethernet / Cellular 选择；同传输类型但 handle 改变也触发重建；
   - 网络观察会话增加 lease 所有权，旧 Service 销毁不会注销新 Service 已注册的回调；
   - 新 TUN 绑定、TUN 清理和活动网络离网时清空 IPv4 邻居缓存。
+- 设计边界：
+  - 不增加 ping、流量停滞或定时健康巡检，不因启发式判断主动打断正常连接；
+  - 不改变 `NodeState` 对 UI 暴露的既有语义；
+  - 自动重建只由系统真实底层网络 identity 变化触发，其余健康门禁仅在用户或既有流程启动 runtime 时生效。
 - 测试：
   - 新增 runtime 复用决策测试，覆盖同网络复用、跨网络、未知旧网络、Planet 模式变化和核心失活；
   - 新增内核健康测试，覆盖 `protect(false)` 资源回收与 worker/Socket 实际状态；

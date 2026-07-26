@@ -1188,14 +1188,6 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             rxBytesProvider = { runtimeContext.rxBytes() },
             isForegroundStarted = { foregroundStarted.get() },
             isScreenInteractive = { powerManager.isInteractive },
-            isRuntimeHealthy = { runtimeService.isRuntimeHealthy(requireTunnel = true) },
-            onRuntimeUnhealthy = {
-                executeAction(
-                    ServiceAction.PhysicalNetworkChanged(
-                        reason = RUNTIME_HEALTH_CHECK_REASON,
-                    ),
-                )
-            },
         )
         val networkController = ServiceNetworkController(
             serviceScope = serviceScope,
@@ -1455,9 +1447,6 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
 
         /** 物理切网重建的最大有界重试次数（防死循环；超过后静置等待下次真实网络事件）。 */
         private const val PHYSICAL_REBUILD_MAX_RETRIES = 2
-
-        /** 已连接状态的数据面健康检查触发原因。 */
-        private const val RUNTIME_HEALTH_CHECK_REASON = "runtime_health_check"
 
         /** 包名格式校验器。 */
         private val PACKAGE_NAME_REGEX = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")

@@ -545,7 +545,6 @@ private fun NetworkCapabilities.isEligibleUnderlyingNetwork(): Boolean {
             hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
     return hasSupportedTransport &&
         hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-        hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
         hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED) &&
         hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
 }
