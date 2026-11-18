@@ -845,15 +845,28 @@ class ZeroTierVpnService : VpnService(), RoutePolicyRuntimeDelegate {
             return terminalSuccess(null)
         }
 
+        // 物理网络发生真实切换时，旧网络上的手动连接保护窗口失效，立即清理。
+        routePolicyService.clearManualProtectionDeadline()
+
+        // 若切网后实时链路已命中内网探测（如 cellular_to_wifi 回到家庭内网），
+        // 直接停掉旧 runtime 并进入仅监听模式，避免在内网 Wi-Fi 上无意义地重启一次 C++ 内核和 VPN 隧道。
+        val switchPolicy = routePolicyService.checkStartPolicy(reason = action.reason)
+        if (switchPolicy.shouldEnterMonitorOnly) {
+            logChain(
+                "物理网络变化命中内网策略，直接进入仅监听 networkId=${activeNetworkId.value} 原因=${action.reason} 详情=${switchPolicy.detail}",
+            )
+            return handleEnterMonitorOnly(
+                ServiceAction.EnterMonitorOnly(
+                    networkId = activeNetworkId,
+                    reason = action.reason,
+                    detail = switchPolicy.detail,
+                ),
+            )
+        }
+
         // 转发模式下（含 ERROR 自愈）：停止旧 runtime 以释放绑定到旧网络接口的 UDP Socket，
         // 再重新 Join 时 startRuntime 会创建新 Socket 并重新执行 protect()。
         // setState(connecting) 同时把 ERROR 态清回 CONNECTING，解除“单向门”。
-        //
-        // 关键：此处必须 skipStartPolicyCheck=true。
-        // 重连只负责重建 Socket、恢复连通性，绝不在此重新做内网判定——
-        // 否则外网 WiFi 与家里同网段（如 192.168.1.0/24）会被误判为内网，
-        // 从而错误地进入仅监听模式、停掉中转，导致拿到 IP 却连不上家里内网。
-        // 内网判定唯一由并行派发的 triggerAutoRoutePolicyCheck 负责。
         stateStore.setState(ServiceState.connecting(activeNetworkId, action.reason))
         runtimeService.stopRuntime(keepServiceAlive = true)
 

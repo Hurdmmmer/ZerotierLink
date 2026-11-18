@@ -8,6 +8,9 @@ import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.data.settings.SettingsStore
 import io.github.jimmy.ztlink.model.service.ServiceError
 import io.github.jimmy.ztlink.model.service.ServiceErrorCode
+import io.github.jimmy.ztlink.service.observer.NetworkChangeObserver
+import io.github.jimmy.ztlink.service.observer.NetworkTransport
+import kotlinx.coroutines.delay
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,6 +26,7 @@ import javax.inject.Singleton
 class ServiceStartNetworkGuard @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
     private val settingsStore: SettingsStore,
+    private val networkChangeObserver: NetworkChangeObserver,
 ) {
 
     /**
@@ -39,9 +43,16 @@ class ServiceStartNetworkGuard @Inject constructor(
 
         // 第一步：解析当前连接类型。
         // 说明：
-        // 1. 优先按 activeNetwork 判定；
-        // 2. 读取失败时视为 NONE，直接拦截并提示无网络。
-        val connectionType = resolveCurrentConnection(connectivityManager)
+        // 1. 优先结合 activeNetwork 与 NetworkChangeObserver 的底层真实网络判断；
+        // 2. 在 Wi-Fi 切蜂窝的瞬态切换窗口（几十毫秒内 activeNetwork 可能短暂为 null）执行最多 2 次短重试，
+        //    避免 NetworkChangeObserver 已识别到蜂窝网络时被误拦为“无可用网络”。
+        var connectionType = resolveCurrentConnection(connectivityManager)
+        var attempt = 0
+        while (connectionType == CurrentConnection.NONE && attempt < TRANSIENT_RETRY_COUNT) {
+            delay(TRANSIENT_RETRY_DELAY_MS)
+            connectionType = resolveCurrentConnection(connectivityManager)
+            attempt += 1
+        }
         if (connectionType == CurrentConnection.NONE) {
             return ServiceError(
                 code = ServiceErrorCode.VALIDATION_FAILED,
@@ -73,18 +84,32 @@ class ServiceStartNetworkGuard @Inject constructor(
      * 解析当前连接类型。
      *
      * 说明：
-     * 1. 仅使用 activeNetwork 判定；
-     * 2. 不再使用 allNetworks 回退，避免依赖过时 API。
+     * 1. 优先使用 [NetworkChangeObserver] 过滤掉 VPN 后的真实底层传输类型；
+     * 2. 若未命中则回退检查 `activeNetwork`（跳过自身 VPN 传输）；
+     * 3. 避免在 Wi-Fi -> 蜂窝切换瞬态或 VPN 已建立时误判为无网络。
      */
     private fun resolveCurrentConnection(
         connectivityManager: ConnectivityManager,
     ): CurrentConnection {
+        when (networkChangeObserver.currentTransport()) {
+            NetworkTransport.CELLULAR -> return CurrentConnection.CELLULAR
+            NetworkTransport.WIFI,
+            NetworkTransport.ETHERNET,
+            -> return CurrentConnection.OTHER
+            else -> Unit
+        }
+
         val activeNetwork = connectivityManager.activeNetwork
         val activeCapabilities = activeNetwork?.let { network ->
             connectivityManager.getNetworkCapabilities(network)
         }
         val activeConnection = activeCapabilities?.toCurrentConnection()
         return activeConnection ?: CurrentConnection.NONE
+    }
+
+    private companion object {
+        const val TRANSIENT_RETRY_COUNT: Int = 3
+        const val TRANSIENT_RETRY_DELAY_MS: Long = 150L
     }
 }
 

@@ -908,6 +908,12 @@ private class NodeDataStore(
         buffer: ByteArray,
         secure: Boolean,
     ): Int {
+        // 对齐老项目 ZerotierFix DataStore.java：
+        // 当启用自定义 Planet 时，禁止 C++ 内核覆写或修改 planet.custom 文件。
+        if (isCustomPlanetHookActive(name)) {
+            Log.d(DATA_STORE_TAG, "Skip writing custom planet file from native core. name=$name")
+            return 0
+        }
         val targetName = resolveTargetName(name)
         return runCatching {
             val file = resolveFile(targetName)
@@ -928,6 +934,11 @@ private class NodeDataStore(
     }
 
     override fun onDelete(name: String): Int {
+        // 当启用自定义 Planet 时，禁止 C++ 内核删除 planet.custom 文件。
+        if (isCustomPlanetHookActive(name)) {
+            Log.d(DATA_STORE_TAG, "Skip deleting custom planet file from native core. name=$name")
+            return 0
+        }
         val targetName = resolveTargetName(name)
         return runCatching {
             val file = resolveFile(targetName)
@@ -936,6 +947,15 @@ private class NodeDataStore(
             Log.e(DATA_STORE_TAG, "Delete failed. name=$targetName", it)
             1
         }
+    }
+
+    /**
+     * 判断当前 DataStore 操作是否命中自定义 Planet 保护规则。
+     */
+    private fun isCustomPlanetHookActive(rawName: String): Boolean {
+        return rawName == PlanetFileStore.FILE_PLANET &&
+            settingsStateHolder.currentState().planetUseCustom &&
+            planetFileStore.hasCustomPlanetFile()
     }
 
     /**

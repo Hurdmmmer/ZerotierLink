@@ -443,6 +443,14 @@ class NetworkChangeObserver @Inject constructor(
     }
 
     /**
+     * 返回当前观察到的真实底层 [Network] 实例（具备 INTERNET 且非 VPN）。
+     */
+    fun currentUnderlyingNetwork(): Network? = synchronized(stateLock) {
+        refreshObservedNetworksLocked()
+        selectUnderlyingNetworkLocked()?.network
+    }
+
+    /**
      * 读取当前 Wi-Fi IPv4 文本。
      */
     fun currentWifiIpv4Address(): String? = currentWifiIpv4Info()?.address

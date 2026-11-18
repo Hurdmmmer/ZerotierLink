@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import io.github.jimmy.ztlink.R
 import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
+import io.github.jimmy.ztlink.data.settings.PlanetDohResolver
 
 /**
  * Planet 来源配置弹窗。
@@ -60,6 +61,8 @@ import io.github.jimmy.ztlink.app.ui.theme.ZtTheme
 fun PlanetSourceDialog(
     initialUrl: String,
     selectedFileName: String,
+    currentEndpoint: String = "",
+    hasBoundDynamicHost: Boolean = false,
     onDismiss: () -> Unit,
     onChooseLocalFile: () -> Unit,
     onConfirmUrl: (String) -> Unit,
@@ -163,10 +166,14 @@ fun PlanetSourceDialog(
                             )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                text  = if (selectedFileName.isNotBlank())
-                                    stringResource(R.string.settings_planet_source_file_label)
-                                else
-                                    stringResource(R.string.settings_planet_source_file_hint),
+                                text = when {
+                                    selectedFileName.isNotBlank() && currentEndpoint.isNotBlank() ->
+                                        stringResource(R.string.settings_planet_source_endpoint_label, currentEndpoint)
+                                    selectedFileName.isNotBlank() ->
+                                        stringResource(R.string.settings_planet_source_file_label)
+                                    else ->
+                                        stringResource(R.string.settings_planet_source_file_hint)
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (selectedFileName.isNotBlank())
                                     MaterialTheme.colorScheme.primary
@@ -238,11 +245,16 @@ fun PlanetSourceDialog(
                         Text(stringResource(R.string.settings_action_cancel))
                     }
                     Spacer(Modifier.width(spacing.space8))
+                    val confirmTextRes = when {
+                        urlInput.isBlank() && hasBoundDynamicHost -> R.string.settings_planet_source_clear_domain
+                        PlanetDohResolver.isHttpDownloadUrl(urlInput) -> R.string.settings_planet_source_download_and_use
+                        else -> R.string.settings_planet_source_bind_and_resolve
+                    }
                     TextButton(
                         onClick = { onConfirmUrl(urlInput.trim()) },
-                        enabled = urlInput.isNotBlank(),
+                        enabled = urlInput.isNotBlank() || hasBoundDynamicHost,
                     ) {
-                        Text(stringResource(R.string.settings_planet_source_download_and_use))
+                        Text(stringResource(confirmTextRes))
                     }
                 }
             }

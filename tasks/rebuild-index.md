@@ -1082,3 +1082,41 @@
 - 验证结果：
   - `:app:testDebugUnitTest` 通过；
   - `:app:compileDebugKotlin` 通过。
+
+## 10.59 自定义 Planet 动态域名 DoH 同步与切网门禁修复（2026-11-14）
+- 修复场景：
+  - 自建 Planet 服务端公网 IP 动态变化（绑定 DDNS 域名如 `ddns.example.com`）时，移动端静态 `planet.custom` 内的 IPv4 端点过期失效；
+  - 从家庭内网 Wi-Fi（命中内网探测暂停进入 `MONITOR_ONLY`）切换到蜂窝移动网络时，`ResumeRelay` 被 `ServiceStartNetworkGuard` 误判为 `No available network` 拦截，导致永久卡在 `MONITOR_ONLY`；
+  - `RuntimeContext.NodeDataStore` 将 C++ 内核对 `"planet"` 的写入/删除操作重定向到 `"planet.custom"`，存在覆盖或删除用户自定义 Planet 文件的风险；
+  - 运行期间更新 `planet.custom`（重新导入或 DoH 刷新 IP）但 `planetUseCustom` 仍为 `true` 时，`RuntimeService` 热复用旧 Node 且未清理 `peers.d` 缓存。
+- 已完成（方案 A，对齐 `Hurdmmmer/ZeroTierHome`）：
+  - 新增 `PlanetDocument.kt`：完整校验 ZeroTier `World` 二进制结构（`TYPE_PLANET(0x01)`、`WorldId`、`Timestamp`、椭圆曲线签名、Root 身份与端点列表），并提供 `withIpv4Endpoints(newIpv4)` 在不改变签名、时间戳与端口的前提下就地替换 4 字节公网 IPv4；
+  - 新增 `PlanetDohResolver.kt`：采用 RFC 8484 Wire 格式向 `223.5.5.5`、`223.6.6.6`、`1.1.1.1`、`1.0.0.1` 发起直连 HTTPS DoH 查询，优先绑定 `NetworkChangeObserver.currentUnderlyingNetwork()`（绕过 VPN 隧道与污染 DNS），并过滤私网、保留段与 Fake-IP（`198.18.0.0/15`）；
+  - 升级 `PlanetFileStore.kt`：
+    - 复用设置页 URL 输入框（`importFromUrl`）智能识别完整下载 URL 与裸域名/IP（方案 A：先选本地基准 `planet` 文件，再填入动态域名）；
+    - 新增 `syncCustomPlanetEndpointIfNeeded(...)`，在每次 `RuntimeService.startRuntime()` 前自动通过 DoH 校验并更新 `planet.custom` 端点（解析失败时容错回退现有文件），变更后自动清理 `filesDir/peers.d`；
+  - 修复 `RuntimeContext.kt`（`NodeDataStore`）：当 `isCustomPlanetHookActive("planet")` 为 `true` 时，拦截 `onDataStorePut` 与 `onDelete` 并直接返回 `0`，对齐 `ZerotierFix` 的 `DataStore.java` 保护逻辑；
+  - 修复 `RuntimeService.kt`：新增 `runtimeCustomPlanetFingerprintRef` 跟踪已加载的 `planet.custom` 内容指纹（SHA-256 + 主端点），任何 Planet 文件内容或端点 IP 变化均触发 `clearPeerCache()` 与完整冷重启；
+  - 修复 `ServiceStartNetworkGuard.kt`：注入 `NetworkChangeObserver` 优先读取非 VPN 真实底层传输类型，并增加瞬态切换短重试（3 次 × 150ms），消除 `wifi_to_cellular` 切换瞬间的误拦截；
+  - 修复 `RoutePolicyService.kt` 与 `ZeroTierVpnService.kt`：
+    - 当发生实质性物理切网（如 `cellular_to_wifi` 回到家庭内网 Wi-Fi）时，立即清除 `manualConnectProtectionDeadlineMs`（10 秒手动连接保护窗口），解决在蜂窝下点击连接后 10 秒内打开内网 Wi-Fi 被误拦截、导致无法进入 `MONITOR_ONLY` 的问题；
+    - 在 `handlePhysicalNetworkChanged` 中增加 `checkStartPolicy` 前置判断，若新切入的 Wi-Fi 已命中内网探测，直接进入 `MONITOR_ONLY` 并关闭旧内核，避免在内网 Wi-Fi 上无意义地重启一次 C++ 内核和 VPN 隧道。
+- 验证结果：
+  - 新增 `PlanetDocumentTest` 单元测试通过；
+  - `:app:testDebugUnitTest` 通过；
+  - `:app:compileDebugKotlin` 与 `:app:installDebug`（真机 `SM-S9280`）通过。
+
+## 10.60 修复“指定 Planet 文件 + 动态公网域名”互斥问题与 DoH 解析兼容（2026-11-18）
+- 修复场景：
+  - 用户先选中本地基准 `planet` 文件后，`planetSourceType` 停留在 `FILE`，导致连接前 `PlanetFileStore.syncCustomPlanetEndpointIfNeeded` 因 `sourceType != URL` 直接跳过 DoH 域名解析；
+  - 反之若用户输入域名保存为 `URL`，界面会隐藏本地文件标识，且重新导入 `planet` 文件会清空已配置的域名；
+  - `PlanetDohResolver` 使用随机 DNS ID 并强校验回包 ID 一致，不符合 RFC 8484 最佳实践，且缺少真实底层物理网络原生 DNS 兜底。
+- 已完成：
+  - 新增独立持久化字段 `SettingsKeys.PLANET_DYNAMIC_HOST`（`SettingsUiState.planetDynamicHost`、`SettingsStore` 含旧配置兼容迁移），将“本地基准 `planet` 文件”与“动态公网域名（DDNS）”解耦保存、互不覆盖；
+  - 升级 `SettingsStateHolder` 与 `PlanetFileStore.syncCustomPlanetEndpointIfNeeded`：只要启用自定义 Planet 且配置了 `planetDynamicHost`，无论 `planetSourceType` 是 `FILE` 还是 `URL`，连接前均自动通过 DoH 解析最新公网 IPv4 并原地更新 `planet.custom`，重导入本地文件后也会立即按已绑定域名同步最新 IP；
+  - 升级 `PlanetDohResolver`：遵循 RFC 8484 请求 DNS ID 固定为 `0`、兼容服务端响应 ID；增加 DNSPod DoH（`1.12.12.12`）；全部 DoH 节点失败时通过 `underlyingNetwork.getAllByName`（绑定非 VPN 物理网络）作为公网 IPv4 兜底；
+  - 升级 `SettingsViewModel`、`SettingScreen` 与 `PlanetSourceDialog`：展示当前 `planet.custom` 实际端点（`IP:Port`）、保留文件名与绑定域名并行展示、区分“下载并使用”与“绑定并解析 / 解绑域名”操作并补充成功/失败 Toast 提示；
+  - 补充 `PlanetDocumentTest` 对 RFC 8484 Wire 响应包解析与 Fake-IP 过滤的单测覆盖。
+- 验证结果：
+  - `:app:testDebugUnitTest` 通过；
+  - `:app:compileDebugKotlin` 通过。

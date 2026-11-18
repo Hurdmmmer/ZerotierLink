@@ -40,6 +40,13 @@ sealed interface SettingsUiEvent : CommonUiEvent {
                 PlanetFileStore.FailureReason.WRITE_FAILED -> R.string.settings_planet_import_error_write_failed
             }
     }
+
+    /**
+     * Planet 导入或动态端点解析成功事件。
+     */
+    data class PlanetImportSucceeded(
+        override val messageText: String,
+    ) : SettingsUiEvent, CommonUiEvent.ShowToastText
 }
 
 /**
@@ -55,6 +62,8 @@ sealed interface SettingsUiEvent : CommonUiEvent {
 class SettingsViewModel @Inject constructor(
     /** 设置状态单例持有器（应用级唯一状态源）。 */
     private val settingsStateHolder: SettingsStateHolder,
+    /** Planet 文件存储，用于读取当前解析后的主端点摘要。 */
+    private val planetFileStore: PlanetFileStore,
 ) : ViewModel() {
 
     /**
@@ -64,6 +73,12 @@ class SettingsViewModel @Inject constructor(
      * 先给默认值，init 中再替换成“本地读取结果”。
      */
     var settingUiState by mutableStateOf(SettingsUiState())
+        private set
+
+    /**
+     * 当前本地 `planet.custom` 主端点摘要（如 `101.81.76.191:9994`）。
+     */
+    var currentPlanetEndpoint by mutableStateOf("")
         private set
 
     /**
@@ -90,7 +105,12 @@ class SettingsViewModel @Inject constructor(
             // 关键逻辑：
             // 强制刷新最新持久化值，避免仅依赖启动缓存导致页面读到旧状态。
             settingsStateHolder.refreshFromStore(forceRefresh = true)
+            refreshPlanetEndpoint()
         }
+    }
+
+    fun refreshPlanetEndpoint() {
+        currentPlanetEndpoint = planetFileStore.currentCustomPlanetEndpoint().orEmpty()
     }
 
     /**
@@ -193,7 +213,13 @@ class SettingsViewModel @Inject constructor(
                 rawUri = rawUri,
             )
             when (importResult) {
-                is PlanetFileStore.ImportResult.Success -> Unit
+                is PlanetFileStore.ImportResult.Success -> {
+                    refreshPlanetEndpoint()
+                    val endpoint = currentPlanetEndpoint
+                    if (endpoint.isNotBlank()) {
+                        _uiEvents.emit(SettingsUiEvent.PlanetImportSucceeded("Planet imported: $endpoint"))
+                    }
+                }
                 is PlanetFileStore.ImportResult.Failure -> {
                     _uiEvents.emit(SettingsUiEvent.PlanetImportFailed(importResult.reason))
                 }
@@ -202,22 +228,37 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * 从 URL 下载 planet 并设置来源信息。
+     * 从 URL 下载 planet 或绑定动态公网域名（留空确认可解绑已有动态域名）。
      *
-     * @param url 输入的 URL。
+     * @param url 输入的 URL 或 DDNS 域名。
      */
     fun setPlanetSourceFromUrl(url: String) {
         val finalUrl = url.trim()
         if (finalUrl.isBlank()) {
+            if (settingUiState.planetDynamicHost.isNotBlank()) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    settingsStateHolder.clearPlanetDynamicHost()
+                    refreshPlanetEndpoint()
+                }
+            }
             return
         }
 
         viewModelScope.launch(Dispatchers.IO) {
             // 关键逻辑：
-            // URL 下载与设置写回统一由单例状态源处理，避免多层重复写状态。
+            // URL 下载 / 域名 DoH 解析与设置写回统一由单例状态源处理，避免多层重复写状态。
             val importResult = settingsStateHolder.importPlanetFromUrl(finalUrl)
             when (importResult) {
-                is PlanetFileStore.ImportResult.Success -> Unit
+                is PlanetFileStore.ImportResult.Success -> {
+                    refreshPlanetEndpoint()
+                    val endpoint = currentPlanetEndpoint
+                    val msg = if (endpoint.isNotBlank()) {
+                        "Planet updated: $endpoint"
+                    } else {
+                        "Planet updated"
+                    }
+                    _uiEvents.emit(SettingsUiEvent.PlanetImportSucceeded(msg))
+                }
                 is PlanetFileStore.ImportResult.Failure -> {
                     _uiEvents.emit(SettingsUiEvent.PlanetImportFailed(importResult.reason))
                 }

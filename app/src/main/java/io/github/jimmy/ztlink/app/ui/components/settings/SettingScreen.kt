@@ -218,20 +218,39 @@ fun SettingScreen(
                         SettingActionRow(
                             title         = stringResource(R.string.settings_item_set_planet_file),
                             summary       = stringResource(R.string.settings_item_set_planet_file_summary),
-                            trailingLabel = uiState.planetSourceDisplay.ifBlank { null },
+                            trailingLabel = buildString {
+                                val fileLabel = uiState.planetSourceDisplay
+                                val hostLabel = uiState.planetDynamicHost
+                                when {
+                                    fileLabel.isNotBlank() && hostLabel.isNotBlank() && fileLabel != hostLabel -> {
+                                        append(fileLabel)
+                                        append(" · ")
+                                        append(hostLabel)
+                                    }
+                                    hostLabel.isNotBlank() -> append(hostLabel)
+                                    fileLabel.isNotBlank() -> append(fileLabel)
+                                }
+                            }.ifBlank { null },
                             enabled       = uiState.planetFileActionsEnabled,
-                            onClick       = { showPlanetSourceDialog = true },
+                            onClick       = {
+                                settings.refreshPlanetEndpoint()
+                                showPlanetSourceDialog = true
+                            },
                         )
                         // Planet 来源配置弹窗
                         if (showPlanetSourceDialog) {
                             PlanetSourceDialog(
-                                initialUrl = if (uiState.planetSourceType == PlanetSourceType.URL) {
+                                initialUrl = if (uiState.planetDynamicHost.isNotBlank()) {
+                                    uiState.planetDynamicHost
+                                } else if (uiState.planetSourceType == PlanetSourceType.URL) {
                                     uiState.planetSourceRawValue
                                 } else {
                                     ""
                                 },
-                                selectedFileName = if (uiState.planetSourceType == PlanetSourceType.FILE) {
-                                    uiState.planetSourceDisplay
+                                currentEndpoint = settings.currentPlanetEndpoint,
+                                hasBoundDynamicHost = uiState.planetDynamicHost.isNotBlank(),
+                                selectedFileName = if (uiState.planetSourceType == PlanetSourceType.FILE || settings.currentPlanetEndpoint.isNotBlank()) {
+                                    uiState.planetSourceDisplay.ifBlank { settings.currentPlanetEndpoint }
                                 } else {
                                     ""
                                 },

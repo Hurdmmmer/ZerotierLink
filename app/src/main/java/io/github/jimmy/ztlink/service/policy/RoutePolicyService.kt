@@ -369,6 +369,11 @@ class RoutePolicyService @Inject constructor(
                         logChain("自动策略跳过进入仅监听 原因=$reason 详情=already_monitor_only")
                         return@withLock
                     }
+                    // 当发生实质性切入 Wi-Fi（如 cellular_to_wifi / none_to_wifi）或 Wi-Fi 获取到内网 IP 时，
+                    // 说明底层网络环境已改变，立即清除此前的连接保护窗口，避免从蜂窝切回内网 Wi-Fi 时被误拦截。
+                    if (isWifiEntryOrIpAssignedReason(reason)) {
+                        clearManualProtectionDeadline()
+                    }
                     val now = SystemClock.elapsedRealtime()
                     val deadline = manualConnectProtectionDeadlineMs.get()
                     if (now < deadline) {
@@ -390,6 +395,12 @@ class RoutePolicyService @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun isWifiEntryOrIpAssignedReason(reason: String): Boolean {
+        return reason.endsWith("_to_wifi") ||
+            reason == "wifi_network_changed" ||
+            reason == "wifi_ip_assigned"
     }
 
     private fun logChain(message: String) {

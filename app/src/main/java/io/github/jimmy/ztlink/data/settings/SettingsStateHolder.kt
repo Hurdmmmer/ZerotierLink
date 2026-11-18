@@ -120,14 +120,28 @@ class SettingsStateHolder @Inject constructor(
             return importResult
         }
 
+        val currentDynamicHost = _state.value.planetDynamicHost.trim()
+        if (currentDynamicHost.isNotBlank()) {
+            // 若用户已绑定动态域名，重新导入本地基准 planet 文件后立即同步一次最新公网 IPv4，
+            // 防止新文件里的旧 IP 覆盖动态域名语义。
+            planetFileStore.syncCustomPlanetEndpointIfNeeded(
+                planetUseCustom = true,
+                dynamicHost = currentDynamicHost,
+                sourceType = PlanetSourceType.FILE,
+                rawSourceValue = rawUri,
+            )
+        }
+
         stateMutex.withLock {
             // 关键逻辑：
-            // 导入成功后立即写回来源类型与来源值，保证下次进入页面仍可恢复来源信息。
+            // 保留已绑定的 planetDynamicHost，确保“本地基准文件 + 动态公网域名”互不覆盖。
+            val preservedHost = _state.value.planetDynamicHost.trim()
             val newState = _state.value.copy(
                 planetUseCustom = true,
                 planetSourceType = PlanetSourceType.FILE,
                 planetSourceDisplay = displayName,
                 planetSourceRawValue = rawUri,
+                planetDynamicHost = preservedHost,
             )
             applyStateLocked(newState)
         }
@@ -135,31 +149,72 @@ class SettingsStateHolder @Inject constructor(
     }
 
     /**
-     * 从 URL 下载 planet 文件并更新设置状态。
+     * 从 URL 下载 planet 文件或绑定动态公网域名并更新设置状态。
      *
-     * @param sourceUrl 输入 URL。
+     * @param sourceUrl 输入 URL 或 DDNS 域名。
      * @return 导入结果；失败时可由上层映射为提示文案。
      */
     suspend fun importPlanetFromUrl(
         sourceUrl: String,
     ): PlanetFileStore.ImportResult {
-        val importResult = planetFileStore.importFromUrl(sourceUrl)
+        val trimmed = sourceUrl.trim()
+        val importResult = planetFileStore.importFromUrl(trimmed)
         if (importResult !is PlanetFileStore.ImportResult.Success) {
             return importResult
         }
 
+        val isDownloadUrl = PlanetDohResolver.isHttpDownloadUrl(trimmed)
         stateMutex.withLock {
-            // 关键逻辑：
-            // URL 导入成功后将来源类型改为 URL，避免显示与真实来源不一致。
-            val newState = _state.value.copy(
-                planetUseCustom = true,
-                planetSourceType = PlanetSourceType.URL,
-                planetSourceDisplay = sourceUrl,
-                planetSourceRawValue = sourceUrl,
-            )
+            val current = _state.value
+            val newState = if (isDownloadUrl) {
+                current.copy(
+                    planetUseCustom = true,
+                    planetSourceType = PlanetSourceType.URL,
+                    planetSourceDisplay = trimmed,
+                    planetSourceRawValue = trimmed,
+                    planetDynamicHost = "",
+                )
+            } else {
+                // 方案 A（域名/IP 动态改写）：保留本地基准文件标识，仅将动态域名存入 planetDynamicHost。
+                val preservedType = if (current.planetSourceType == PlanetSourceType.FILE) {
+                    PlanetSourceType.FILE
+                } else {
+                    PlanetSourceType.FILE
+                }
+                val preservedDisplay = current.planetSourceDisplay
+                    .takeIf { current.planetSourceType == PlanetSourceType.FILE && it.isNotBlank() }
+                    ?: PlanetFileStore.FILE_CUSTOM_PLANET
+                current.copy(
+                    planetUseCustom = true,
+                    planetSourceType = preservedType,
+                    planetSourceDisplay = preservedDisplay,
+                    planetDynamicHost = trimmed,
+                )
+            }
             applyStateLocked(newState)
         }
         return importResult
+    }
+
+    /**
+     * 清除绑定的动态公网域名，恢复为仅使用当前本地 `planet.custom` 文件内静态 IP。
+     */
+    suspend fun clearPlanetDynamicHost() {
+        stateMutex.withLock {
+            val current = _state.value
+            val newState = if (current.planetSourceType == PlanetSourceType.URL &&
+                !PlanetDohResolver.isHttpDownloadUrl(current.planetSourceRawValue)
+            ) {
+                current.copy(
+                    planetSourceType = PlanetSourceType.FILE,
+                    planetSourceDisplay = PlanetFileStore.FILE_CUSTOM_PLANET,
+                    planetDynamicHost = "",
+                )
+            } else {
+                current.copy(planetDynamicHost = "")
+            }
+            applyStateLocked(newState)
+        }
     }
 
     /**

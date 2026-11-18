@@ -96,6 +96,12 @@ data class SettingsUiState(
     val planetSourceRawValue: String = "",
 
     /**
+     * 自定义 Planet 绑定的动态公网域名（DDNS）或 IP。
+     * 与本地基准 `planet.custom` 文件解耦，支持先选本地文件再独立维护动态域名。
+     */
+    val planetDynamicHost: String = "",
+
+    /**
      * 是否允许蜂窝网络下建立连接。
      * false 时，在移动网络场景应阻断连接并提示用户。
      */

@@ -81,6 +81,9 @@ class RuntimeService @Inject constructor(
     /** 记录当前 runtime 启动时使用的 planet 模式。 */
     private val runtimeCustomPlanetRef: AtomicReference<Boolean?> = AtomicReference(null)
 
+    /** 记录当前 runtime 启动时加载的自定义 planet 文件指纹（用于识别内容或 DoH IP 变更）。 */
+    private val runtimeCustomPlanetFingerprintRef: AtomicReference<String?> = AtomicReference(null)
+
     /**
      * 绑定当前 VpnService。
      *
@@ -135,20 +138,40 @@ class RuntimeService @Inject constructor(
         logChain("Runtime 启动开始 目标网络=${targetNetworkId?.value ?: "none"}")
         val settings = settingsStateHolder.currentState()
         var useCustomPlanet = settings.planetUseCustom
+
+        // 连接前：若启用了自定义 Planet 且绑定了动态域名，先通过 DoH 同步最新公网 IPv4 到 planet.custom
+        if (useCustomPlanet) {
+            planetFileStore.syncCustomPlanetEndpointIfNeeded(
+                planetUseCustom = useCustomPlanet,
+                dynamicHost = settings.planetDynamicHost,
+                sourceType = settings.planetSourceType,
+                rawSourceValue = settings.planetSourceRawValue,
+            )
+        }
+        val currentPlanetFingerprint = if (useCustomPlanet) {
+            planetFileStore.customPlanetFingerprint()
+        } else {
+            null
+        }
+
         val existingRuntime = runtimeRef.get()
         var existingKernelStateForStart: NodeKernelState? = existingRuntime?.readKernelState()
 
-        // 第一步：已有对象不等于可复用。线程退出、Socket 关闭或网络 ID 变化后，
+        // 第一步：已有对象不等于可复用。线程退出、Socket 关闭、网络 ID 变化或 planet.custom 内容变化后，
         // 引用仍可能存在；若继续热复用，UI 会进入 Connected，但数据面仍绑定旧网络
-        // 或已经停止。所有非 REUSE 分支都必须先完整 stop，并禁止携带旧快照冷启动。
+        // 或旧 Planet 端点。所有非 REUSE 分支都必须先完整 stop，并禁止携带旧快照冷启动。
         if (existingRuntime != null) {
             val currentNetworkId = runtimeContext.activeNetworkId()?.toNetworkIdOrNull()
             val startedWithCustomPlanet = runtimeCustomPlanetRef.get()
+            val startedPlanetFingerprint = runtimeCustomPlanetFingerprintRef.get()
+            val planetModeAndContentMatches =
+                startedWithCustomPlanet == useCustomPlanet &&
+                    startedPlanetFingerprint == currentPlanetFingerprint
             val kernelState = existingRuntime.readKernelState()
             val reuseDecision = decideRuntimeReuse(
                 currentNetworkId = currentNetworkId,
                 targetNetworkId = targetNetworkId,
-                planetModeMatches = startedWithCustomPlanet == useCustomPlanet,
+                planetModeMatches = planetModeAndContentMatches,
                 kernelAlive = kernelState.kernelAlive,
             )
             if (reuseDecision == RuntimeReuseDecision.REUSE) {
@@ -171,8 +194,13 @@ class RuntimeService @Inject constructor(
                 "检测到 Runtime 不可复用，执行完整重启 原因=$reuseDecision " +
                     "当前网络=${currentNetworkId?.value ?: "none"} 目标网络=${targetNetworkId?.value ?: "none"} " +
                     "内核健康=${kernelState.kernelAlive} oldCustom=${startedWithCustomPlanet ?: "unknown"} " +
-                    "newCustom=$useCustomPlanet",
+                    "newCustom=$useCustomPlanet planetChanged=${startedPlanetFingerprint != currentPlanetFingerprint}",
             )
+            if (startedWithCustomPlanet != useCustomPlanet ||
+                startedPlanetFingerprint != currentPlanetFingerprint
+            ) {
+                planetFileStore.clearPeerCache()
+            }
             stopRuntimeInternal(
                 runtime = existingRuntime,
                 keepServiceAlive = true,
@@ -218,6 +246,9 @@ class RuntimeService @Inject constructor(
             val kernelState = runtime.readKernelState()
             lastErrorRef.set(null)
             runtimeCustomPlanetRef.set(useCustomPlanet)
+            runtimeCustomPlanetFingerprintRef.set(
+                if (useCustomPlanet) planetFileStore.customPlanetFingerprint() else null,
+            )
 
             RuntimeResult.start(
                 activeNetworkId = targetNetworkId,
@@ -245,6 +276,7 @@ class RuntimeService @Inject constructor(
                 message = serviceError.message,
             ).also {
                 runtimeCustomPlanetRef.set(null)
+                runtimeCustomPlanetFingerprintRef.set(null)
                 logChain("Runtime 启动失败 结果=${it.resultCode} 信息=${it.message}")
                 ChainLog.w(TAG, "Runtime 启动异常", error)
             }

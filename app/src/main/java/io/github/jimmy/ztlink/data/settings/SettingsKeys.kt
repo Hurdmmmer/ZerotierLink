@@ -34,6 +34,8 @@ object SettingsKeys {
     const val PLANET_SOURCE_DISPLAY = "planet_source_display"
     /** planet 来源原始值（Uri 或 URL）。 */
     const val PLANET_SOURCE_RAW_VALUE = "planet_source_raw_value"
+    /** 自定义 planet 绑定的动态公网域名（DDNS）或静态 IP。 */
+    const val PLANET_DYNAMIC_HOST = "planet_dynamic_host"
 
     /** 是否允许蜂窝数据。 */
     const val NETWORK_USE_CELLULAR_DATA = "network_use_cellular_data"

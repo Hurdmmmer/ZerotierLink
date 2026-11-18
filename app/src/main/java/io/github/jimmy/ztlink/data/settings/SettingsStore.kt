@@ -70,6 +70,8 @@ class SettingsStore @Inject constructor(
         private val KEY_PLANET_SOURCE_DISPLAY = stringPreferencesKey(SettingsKeys.PLANET_SOURCE_DISPLAY)
         /** Planet 来源的原始值（文件路径或下载链接） */
         private val KEY_PLANET_SOURCE_RAW_VALUE = stringPreferencesKey(SettingsKeys.PLANET_SOURCE_RAW_VALUE)
+        /** 自定义 Planet 绑定的动态公网域名 */
+        private val KEY_PLANET_DYNAMIC_HOST = stringPreferencesKey(SettingsKeys.PLANET_DYNAMIC_HOST)
 
         // --- 网络相关配置 (Network) ---
         /** 是否允许在蜂窝网络（移动数据）下连接 VPN */
@@ -95,6 +97,19 @@ class SettingsStore @Inject constructor(
         val prefs = readPreferencesSnapshot()
         val savedUseCustom = prefs[KEY_PLANET_USE_CUSTOM] ?: false
         val effectiveUseCustom = if (forceDisableCustomPlanet) false else savedUseCustom
+        val savedSourceType = parsePlanetSourceType(prefs[KEY_PLANET_SOURCE_TYPE])
+        val savedRawValue = prefs[KEY_PLANET_SOURCE_RAW_VALUE] ?: ""
+        val persistedDynamicHost = prefs[KEY_PLANET_DYNAMIC_HOST]
+        // 向后兼容：旧版本把 DDNS 域名存放在 planet_source_raw_value 且 type=URL，自动迁移到 planetDynamicHost。
+        val effectiveDynamicHost = persistedDynamicHost?.trim() ?: if (
+            savedSourceType == PlanetSourceType.URL &&
+            savedRawValue.isNotBlank() &&
+            !PlanetDohResolver.isHttpDownloadUrl(savedRawValue)
+        ) {
+            savedRawValue.trim()
+        } else {
+            ""
+        }
 
         return SettingsUiState(
             themeSettings = ThemeSettings(
@@ -106,9 +121,10 @@ class SettingsStore @Inject constructor(
             planetUseCustom = effectiveUseCustom,
             planetAutoRouteCheck = prefs[KEY_PLANET_AUTO_ROUTE_CHECK] ?: false,
             planetIntranetProbeIp = prefs[KEY_PLANET_INTRANET_PROBE_IP] ?: "",
-            planetSourceType = parsePlanetSourceType(prefs[KEY_PLANET_SOURCE_TYPE]),
+            planetSourceType = savedSourceType,
             planetSourceDisplay = prefs[KEY_PLANET_SOURCE_DISPLAY] ?: "",
-            planetSourceRawValue = prefs[KEY_PLANET_SOURCE_RAW_VALUE] ?: "",
+            planetSourceRawValue = savedRawValue,
+            planetDynamicHost = effectiveDynamicHost,
             useCellularData = prefs[KEY_NETWORK_USE_CELLULAR_DATA] ?: false,
             disableIpv6 = prefs[KEY_NETWORK_DISABLE_IPV6] ?: false,
             whitelistAppPackages = decodeStringList(prefs[KEY_NETWORK_WHITELIST_APP_PACKAGES]),
@@ -162,6 +178,7 @@ class SettingsStore @Inject constructor(
             prefs[KEY_PLANET_SOURCE_TYPE] = state.planetSourceType.name
             prefs[KEY_PLANET_SOURCE_DISPLAY] = state.planetSourceDisplay
             prefs[KEY_PLANET_SOURCE_RAW_VALUE] = state.planetSourceRawValue
+            prefs[KEY_PLANET_DYNAMIC_HOST] = state.planetDynamicHost.trim()
 
             // Network
             prefs[KEY_NETWORK_USE_CELLULAR_DATA] = state.useCellularData
